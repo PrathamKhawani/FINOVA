@@ -1,0 +1,67 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String          @id @default(cuid())
+  name          String
+  email         String          @unique
+  passwordHash  String
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  statements    BankStatement[]
+  refreshTokens RefreshToken[]
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model BankStatement {
+  id           String        @id @default(cuid())
+  userId       String
+  bankName     String?
+  fileName     String
+  originalName String
+  period       String?
+  totalCredits Float         @default(0)
+  totalDebits  Float         @default(0)
+  uploadedAt   DateTime      @default(now())
+  user         User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions Transaction[]
+}
+
+model Transaction {
+  id           String        @id @default(cuid())
+  statementId  String
+  date         DateTime
+  description  String
+  rawNarration String?
+  merchantName String?
+  counterparty String?
+  channel      String?
+  amount       Float
+  debit        Float?
+  credit       Float?
+  type         String        // "credit" | "debit"
+  category     String
+  subcategory  String?
+  confidence   String?       // "high" | "medium" | "low"
+  referenceId  String?
+  balance      Float?
+  createdAt    DateTime      @default(now())
+  statement    BankStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+}
