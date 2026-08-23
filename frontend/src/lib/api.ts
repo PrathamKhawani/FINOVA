@@ -67,7 +67,7 @@ export const apiFetch = async <T = any>(
 
   let response = await fetch(url, { ...options, headers });
 
-  if (response.status === 401 && !endpoint.includes('/auth/')) {
+  if (response.status === 401 && !endpoint.includes('/auth/login') && !endpoint.includes('/auth/register')) {
     if (isRefreshing) {
       return new Promise((resolve, reject) => {
         failedQueue.push({ resolve, reject });
@@ -80,33 +80,51 @@ export const apiFetch = async <T = any>(
     isRefreshing = true;
     const refreshToken = getRefreshToken();
 
-    try {
-      const refreshRes = await fetch(`${API_URL}/auth/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refreshToken }),
-      });
+    if (refreshToken) {
+      try {
+        const refreshRes = await fetch(`${API_URL}/auth/refresh`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ refreshToken }),
+        });
 
-      if (!refreshRes.ok) throw new Error('Refresh failed');
+        if (refreshRes.ok) {
+          const { data } = await refreshRes.json();
+          setTokens(data.accessToken, data.refreshToken);
+          processQueue(null, data.accessToken);
 
-      const { data } = await refreshRes.json();
-      setTokens(data.accessToken, data.refreshToken);
-      processQueue(null, data.accessToken);
-
-      headers['Authorization'] = `Bearer ${data.accessToken}`;
-      response = await fetch(url, { ...options, headers });
-    } catch (err) {
-      processQueue(err, null);
-      clearTokens();
-      window.location.href = '/login';
-      throw err;
-    } finally {
+          headers['Authorization'] = `Bearer ${data.accessToken}`;
+          response = await fetch(url, { ...options, headers });
+        } else {
+          throw new Error('Refresh token invalid');
+        }
+      } catch (err) {
+        processQueue(err, null);
+        clearTokens();
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login';
+          return new Promise(() => {}) as any;
+        }
+      } finally {
+        isRefreshing = false;
+      }
+    } else {
       isRefreshing = false;
+      clearTokens();
+      if (typeof window !== 'undefined') {
+        window.location.href = '/login';
+        return new Promise(() => {}) as any;
+      }
     }
   }
 
-  const data = await response.json();
+  const data = await response.json().catch(() => ({}));
   if (!response.ok) {
+    if (response.status === 401 && typeof window !== 'undefined' && !endpoint.includes('/auth/login') && !endpoint.includes('/auth/register')) {
+      clearTokens();
+      window.location.href = '/login';
+      return new Promise(() => {}) as any;
+    }
     throw new Error(data.message || `HTTP ${response.status}`);
   }
   return data;
