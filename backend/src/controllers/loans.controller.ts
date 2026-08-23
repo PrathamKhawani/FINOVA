@@ -18,10 +18,14 @@ export const getLoans = async (req: AuthRequest, res: Response): Promise<void> =
         type: 'debit',
       },
       orderBy: { date: 'desc' },
-      take: 50,
+      take: 10,
+      select: {
+        id: true, date: true, description: true, amount: true,
+        category: true, subcategory: true, source: true, provider: true,
+      },
     });
 
-    res.json({ success: true, data: { loans, detectedEMIs: emiTxns.slice(0, 10) } });
+    res.json({ success: true, data: { loans, detectedEMIs: emiTxns } });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to fetch loans' });
   }
@@ -30,7 +34,10 @@ export const getLoans = async (req: AuthRequest, res: Response): Promise<void> =
 // POST /api/loans
 export const createLoan = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { name, lenderName, principalAmount, outstandingAmount, emiAmount, interestRate, tenureMonths, startDate, nextDueDate, loanType } = req.body;
+    const {
+      name, lenderName, principalAmount, outstandingAmount,
+      emiAmount, interestRate, tenureMonths, startDate, nextDueDate, loanType,
+    } = req.body;
     if (!name || !principalAmount || !emiAmount) {
       res.status(400).json({ success: false, message: 'name, principalAmount and emiAmount are required' });
       return;
@@ -59,18 +66,19 @@ export const createLoan = async (req: AuthRequest, res: Response): Promise<void>
 // PUT /api/loans/:id
 export const updateLoan = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { id } = req.params;
-    const existing = await prisma.loan.findFirst({ where: { id, userId: req.user!.userId } });
+    const idStr = String(req.params.id);
+    const existing = await prisma.loan.findFirst({ where: { id: idStr, userId: req.user!.userId } });
     if (!existing) { res.status(404).json({ success: false, message: 'Loan not found' }); return; }
 
-    const { outstandingAmount, emiAmount, nextDueDate, isActive } = req.body;
+    const { outstandingAmount, emiAmount, nextDueDate, isActive, loanType } = req.body;
     const loan = await prisma.loan.update({
-      where: { id },
+      where: { id: idStr },
       data: {
-        outstandingAmount: outstandingAmount ? parseFloat(outstandingAmount) : existing.outstandingAmount,
-        emiAmount: emiAmount ? parseFloat(emiAmount) : existing.emiAmount,
+        outstandingAmount: outstandingAmount !== undefined ? parseFloat(outstandingAmount) : existing.outstandingAmount,
+        emiAmount: emiAmount !== undefined ? parseFloat(emiAmount) : existing.emiAmount,
         nextDueDate: nextDueDate ? new Date(nextDueDate) : existing.nextDueDate,
         isActive: isActive !== undefined ? isActive : existing.isActive,
+        loanType: loanType || existing.loanType,
       },
     });
     res.json({ success: true, data: { loan } });
@@ -82,10 +90,10 @@ export const updateLoan = async (req: AuthRequest, res: Response): Promise<void>
 // DELETE /api/loans/:id
 export const deleteLoan = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { id } = req.params;
-    const existing = await prisma.loan.findFirst({ where: { id, userId: req.user!.userId } });
+    const idStr = String(req.params.id);
+    const existing = await prisma.loan.findFirst({ where: { id: idStr, userId: req.user!.userId } });
     if (!existing) { res.status(404).json({ success: false, message: 'Loan not found' }); return; }
-    await prisma.loan.delete({ where: { id } });
+    await prisma.loan.delete({ where: { id: idStr } });
     res.json({ success: true, message: 'Loan deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to delete loan' });

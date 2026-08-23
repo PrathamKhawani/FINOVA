@@ -1,50 +1,86 @@
-# FINOVA – Financial Intelligence Infrastructure
-## Updated Project Roadmap & Deliverable Schedule
+# FINOVA — Project Plan
 
-**Project Title:** FINOVA – Financial Intelligence Infrastructure  
-**Course:** Software Engineering Final Year Capstone Project  
-**Current Milestone:** Phase 3 / Reporting 3 Prototype Evaluation  
+## Semester 7 Project Plan
 
----
-
-## Capstone Project Timeline
-
-```mermaid
-gantt
-    title FINOVA Capstone Project Timeline
-    dateFormat  YYYY-MM-DD
-    section Phase 1: Planning
-    Topic Selection & Requirement Analysis    :done, p1, 2026-01-05, 2026-02-15
-    section Phase 2: Design Shift
-    Personal Finance to PDF Auto-Extraction   :done, p2, 2026-02-16, 2026-04-30
-    section Phase 3: Core MVP (Current)
-    JWT Auth & User Security                  :done, p3a, 2026-05-01, 2026-06-15
-    PDF Parsing, OCR & Categorization Engine  :done, p3b, 2026-06-16, 2026-08-16
-    Reporting 3 Evaluation & Live Demo        :active, p3c, 2026-08-16, 2026-08-30
-    section Phase 4: Advanced Features
-    LLM AI Financial Advisor & Budget Goals   :p4a, 2026-09-01, 2026-10-30
-    Final Capstone Submission & Viva          :p4b, 2026-11-01, 2026-11-30
-```
+**Project Title**: FINOVA — Automated Financial Intelligence & Management System  
+**Team Size**: Individual Project  
+**Submission**: End of Semester 7
 
 ---
 
-## Phase Breakdown
+## Project Goal
 
-### Phase 1: Problem Definition & Initial Concept (Completed)
-- **Initial Focus**: Manual personal finance tracker.
-- **Outcome**: Reviewed by faculty; identified key flaw (manual logging friction leads to poor real-world retention).
+Build a web application that automates personal financial management by:
+1. Extracting transactions from bank statement PDFs without manual entry
+2. Automatically categorizing every transaction with explainable AI rules
+3. Supporting wallet transaction import (PhonePe, Paytm, Google Pay via CSV/PDF)
+4. Providing actionable financial insights, budget tracking, savings goals, and loan management
 
-### Phase 2: System Pivot & Architectural Design (Completed)
-- **Focus**: Strategic pivot to **Automated Bank Statement PDF Processing**.
-- **Outcome**: Designed PDF text/OCR extraction pipeline, 15-category classification system, and full-stack schema (Next.js, Node.js, Express, PostgreSQL, Prisma).
+---
 
-### Phase 3: Working MVP Implementation — Reporting 3 Deliverable (Completed / Current)
-- **Module 1**: User Authentication (Register, Login, JWT access/refresh token rotation, Protected route guards, persistent session state).
-- **Module 2**: Bank Statement Processing (Drag-and-Drop PDF Upload, 4-Tier PDF Parsing & Tesseract OCR Fallback, 15-Category Rule Classifier, PostgreSQL persistence, Recharts Financial Dashboard, Master Ledger with Search/Filter & CSV Export).
-- **Evaluation Assets**: Implementation Status Report, Technical Explanation, Challenges Report, Project Plan, Presentation Outline, Live Demo Guide.
+## Semester 7 Scope
 
-### Phase 4: Future Enhancements — Final Capstone Deliverable (Upcoming)
-- **LLM AI Financial Advisor**: Integration of LLM API for natural language financial queries.
-- **Custom Category Budget Threshold Alerts**: Automated notification when spending exceeds target budgets.
-- **Password-Protected PDF Decryption**: Decryption handling for password-locked bank PDF statements.
-- **Final Evaluation & Viva**: Comprehensive documentation, performance benchmarks, and final presentation.
+### Phase 1 — Foundation (Weeks 1–3)
+- [x] Project structure: Next.js frontend + Express backend + SQLite via Prisma
+- [x] User authentication: register, login, JWT access + refresh tokens, logout
+- [x] Protected route middleware
+- [x] Database schema: User, BankStatement, Transaction, RefreshToken
+
+### Phase 2 — Core Processing (Weeks 4–7)
+- [x] PDF parsing engine using pdfjs-dist (no OCR dependency)
+- [x] Multi-bank support: HDFC, ICICI, SBI, Axis, Kotak layouts
+- [x] Multi-line narration reconstruction
+- [x] Transaction extraction: date, narration, debit, credit, balance, referenceId
+- [x] Initial keyword-based categorization
+
+### Phase 3 — Intelligence Layer (Weeks 8–11)
+- [x] 200+ merchant knowledge base with category mappings
+- [x] 7-layer categorization pipeline
+- [x] Person-to-Person transfer detection (150+ Indian names)
+- [x] WHY explanation stored per transaction (`classificationReason`)
+- [x] Wallet statement import (CSV/PDF, file-based, no direct API)
+- [x] Duplicate transaction detection (fuzzy matching)
+- [x] Schema extensions: source, provider, isDuplicate, needsReview, classificationReason
+
+### Phase 4 — Financial Modules (Weeks 12–14)
+- [x] Dashboard: real-time analytics from database
+- [x] Budget Management: monthly category limits + actual spend
+- [x] Savings Goals: targets, progress, deadlines
+- [x] Loan & EMI Tracker: active loans, payoff progress, EMI detection
+- [x] Financial Reports: category analysis, health ratios, bank vs wallet
+- [x] Smart Insights: data-driven observations (savings, debt, investments)
+
+### Phase 5 — Polish & Submission (Week 15)
+- [x] TypeScript build passes (0 errors)
+- [x] Frontend production build passes
+- [x] Security audit: .env, .db, uploads excluded from Git
+- [x] Complete documentation
+- [x] GitHub push
+
+---
+
+## Semester 8 Planned Features
+
+| Feature | Rationale |
+|---|---|
+| PhonePe/Paytm direct API | Requires official API authorization (Account Aggregator framework) |
+| AI/ML semantic categorization | LLM or embedding-based for edge cases |
+| Multi-month trend analysis | Needs multi-statement historical data accumulation |
+| Advanced predictive analytics | Requires enough historical data (3+ months) |
+| Mobile app | React Native client for iOS/Android |
+| Multi-user household | Shared account view for families |
+| Financial Digital Twin | Simulation of financial scenarios |
+
+---
+
+## Technology Choices & Rationale
+
+| Choice | Why |
+|---|---|
+| **Next.js** | Server-side rendering + client components in one framework |
+| **SQLite + Prisma** | Zero-config database suitable for local development and demo |
+| **pdfjs-dist** | Pure JS PDF text extraction, no binary dependencies |
+| **JWT with refresh tokens** | Stateless auth with secure token rotation |
+| **TypeScript everywhere** | Type safety across both frontend and backend |
+| **Multer** | Standard Node.js file upload middleware |
+| **Recharts** | Responsive charting with minimal setup |

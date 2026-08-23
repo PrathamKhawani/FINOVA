@@ -42,13 +42,13 @@ export const createSavingsGoal = async (req: AuthRequest, res: Response): Promis
 // PUT /api/savings/goals/:id
 export const updateSavingsGoal = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { id } = req.params;
-    const existing = await prisma.savingsGoal.findFirst({ where: { id, userId: req.user!.userId } });
+    const idStr = String(req.params.id);
+    const existing = await prisma.savingsGoal.findFirst({ where: { id: idStr, userId: req.user!.userId } });
     if (!existing) { res.status(404).json({ success: false, message: 'Goal not found' }); return; }
 
     const { name, targetAmount, savedAmount, targetDate, emoji, isCompleted } = req.body;
     const goal = await prisma.savingsGoal.update({
-      where: { id },
+      where: { id: idStr },
       data: {
         name: name ?? existing.name,
         targetAmount: targetAmount ? parseFloat(targetAmount) : existing.targetAmount,
@@ -67,10 +67,10 @@ export const updateSavingsGoal = async (req: AuthRequest, res: Response): Promis
 // DELETE /api/savings/goals/:id
 export const deleteSavingsGoal = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
-    const { id } = req.params;
-    const existing = await prisma.savingsGoal.findFirst({ where: { id, userId: req.user!.userId } });
+    const idStr = String(req.params.id);
+    const existing = await prisma.savingsGoal.findFirst({ where: { id: idStr, userId: req.user!.userId } });
     if (!existing) { res.status(404).json({ success: false, message: 'Goal not found' }); return; }
-    await prisma.savingsGoal.delete({ where: { id } });
+    await prisma.savingsGoal.delete({ where: { id: idStr } });
     res.json({ success: true, message: 'Goal deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to delete savings goal' });

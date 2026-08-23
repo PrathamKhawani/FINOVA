@@ -70,12 +70,13 @@ export const createBudget = async (req: AuthRequest, res: Response): Promise<voi
 export const updateBudget = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
+    const idStr = String(id);
     const { limitAmount, category, subcategory } = req.body;
-    const existing = await prisma.budget.findFirst({ where: { id, userId: req.user!.userId } });
+    const existing = await prisma.budget.findFirst({ where: { id: idStr, userId: req.user!.userId } });
     if (!existing) { res.status(404).json({ success: false, message: 'Budget not found' }); return; }
 
     const budget = await prisma.budget.update({
-      where: { id },
+      where: { id: idStr },
       data: {
         limitAmount: limitAmount ? parseFloat(limitAmount) : existing.limitAmount,
         category: category || existing.category,
@@ -92,9 +93,10 @@ export const updateBudget = async (req: AuthRequest, res: Response): Promise<voi
 export const deleteBudget = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
-    const existing = await prisma.budget.findFirst({ where: { id, userId: req.user!.userId } });
+    const idStr = String(id);
+    const existing = await prisma.budget.findFirst({ where: { id: idStr, userId: req.user!.userId } });
     if (!existing) { res.status(404).json({ success: false, message: 'Budget not found' }); return; }
-    await prisma.budget.delete({ where: { id } });
+    await prisma.budget.delete({ where: { id: idStr } });
     res.json({ success: true, message: 'Budget deleted' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to delete budget' });
