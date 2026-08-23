@@ -7,6 +7,10 @@ import authRoutes from './routes/auth.routes';
 import statementsRoutes from './routes/statements.routes';
 import transactionsRoutes from './routes/transactions.routes';
 import dashboardRoutes from './routes/dashboard.routes';
+import walletRoutes from './routes/wallet.routes';
+import budgetRoutes from './routes/budget.routes';
+import savingsRoutes from './routes/savings.routes';
+import loansRoutes from './routes/loans.routes';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -40,6 +44,10 @@ app.use('/api/auth', authRoutes);
 app.use('/api/statements', statementsRoutes);
 app.use('/api/transactions', transactionsRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/wallet', walletRoutes);
+app.use('/api/budget', budgetRoutes);
+app.use('/api/savings', savingsRoutes);
+app.use('/api/loans', loansRoutes);
 
 // ── 404 Handler ─────────────────────────────────────────────────────────────
 app.use((_req, res) => {

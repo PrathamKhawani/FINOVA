@@ -19,6 +19,9 @@ model User {
   updatedAt     DateTime        @updatedAt
   statements    BankStatement[]
   refreshTokens RefreshToken[]
+  budgets       Budget[]
+  savingsGoals  SavingsGoal[]
+  loans         Loan[]
 }
 
 model RefreshToken {
@@ -33,6 +36,8 @@ model RefreshToken {
 model BankStatement {
   id           String        @id @default(cuid())
   userId       String
+  source       String        @default("BANK")   // "BANK" | "WALLET"
+  provider     String?                           // "HDFC" | "PhonePe" | "Paytm" etc.
   bankName     String?
   fileName     String
   originalName String
@@ -45,23 +50,78 @@ model BankStatement {
 }
 
 model Transaction {
-  id           String        @id @default(cuid())
-  statementId  String
-  date         DateTime
-  description  String
-  rawNarration String?
-  merchantName String?
-  counterparty String?
-  channel      String?
-  amount       Float
-  debit        Float?
-  credit       Float?
-  type         String        // "credit" | "debit"
-  category     String
-  subcategory  String?
-  confidence   String?       // "high" | "medium" | "low"
-  referenceId  String?
-  balance      Float?
-  createdAt    DateTime      @default(now())
-  statement    BankStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+  id              String        @id @default(cuid())
+  statementId     String
+  date            DateTime
+  description     String
+  rawNarration    String?
+  merchantName    String?
+  counterparty    String?
+  channel         String?
+  amount          Float
+  debit           Float?
+  credit          Float?
+  type            String        // "credit" | "debit"
+  transactionType String?       // "Income" | "Expense" | "Transfer" | "Refund"
+  source          String        @default("BANK")   // "BANK" | "WALLET"
+  provider        String?                           // "HDFC" | "PhonePe" | "Paytm" etc.
+  category        String
+  subcategory     String?
+  confidence      String?       // "high" | "medium" | "low"
+  referenceId     String?
+  balance         Float?
+  isDuplicate     Boolean       @default(false)
+  duplicateOf     String?       // ID of the transaction this might duplicate
+  needsReview     Boolean       @default(false)
+  classificationReason String?  // WHY this category was assigned
+  createdAt       DateTime      @default(now())
+  statement       BankStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+}
+
+// ── Budget Management ─────────────────────────────────────────────────────────
+model Budget {
+  id         String   @id @default(cuid())
+  userId     String
+  category   String
+  subcategory String?
+  monthYear  String   // "2025-08" format
+  limitAmount Float
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ── Savings Goals ─────────────────────────────────────────────────────────────
+model SavingsGoal {
+  id           String   @id @default(cuid())
+  userId       String
+  name         String
+  targetAmount Float
+  savedAmount  Float    @default(0)
+  targetDate   DateTime?
+  emoji        String?  @default("🎯")
+  isCompleted  Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ── Loan & EMI Tracker ────────────────────────────────────────────────────────
+model Loan {
+  id              String   @id @default(cuid())
+  userId          String
+  name            String
+  lenderName      String?
+  principalAmount Float
+  outstandingAmount Float
+  emiAmount       Float
+  interestRate    Float?
+  tenureMonths    Int?
+  startDate       DateTime?
+  nextDueDate     DateTime?
+  loanType        String   @default("Personal") // "Home" | "Car" | "Personal" | "Education" | "Business"
+  isActive        Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

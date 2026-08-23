@@ -20,6 +20,11 @@ interface Transaction {
   confidence?: 'high' | 'medium' | 'low';
   referenceId?: string;
   balance?: number;
+  source?: string;          // 'BANK' | 'WALLET'
+  provider?: string;        // 'HDFC' | 'PhonePe' | 'Paytm' etc.
+  isDuplicate?: boolean;
+  needsReview?: boolean;
+  classificationReason?: string;
   statement?: { bankName?: string; originalName?: string };
 }
 
@@ -238,15 +243,28 @@ export default function TransactionsPage() {
                             <div className="font-semibold text-white text-xs truncate flex items-center gap-1.5">
                               <Building2 size={13} className="text-blue-400 shrink-0" />
                               <span>{entity}</span>
+                              {tx.isDuplicate && (
+                                <span className="ml-1 px-1.5 py-0.5 rounded text-[9px] font-bold bg-yellow-500/20 text-yellow-400 border border-yellow-500/30">DUPE?</span>
+                              )}
+                              {tx.needsReview && (
+                                <span className="ml-1 px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-500/20 text-orange-400 border border-orange-500/30">REVIEW</span>
+                              )}
                             </div>
                             <div className="text-[11px] text-slate-400 truncate mt-0.5" title={tx.description}>
                               {tx.description}
                             </div>
-                            {tx.channel && (
-                              <span className="inline-block text-[9px] font-bold text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded mt-1">
-                                {tx.channel}
-                              </span>
-                            )}
+                            <div className="flex items-center gap-1.5 mt-1">
+                              {tx.channel && (
+                                <span className="inline-block text-[9px] font-bold text-slate-400 bg-slate-800 px-1.5 py-0.5 rounded">
+                                  {tx.channel}
+                                </span>
+                              )}
+                              {tx.source === 'WALLET' && (
+                                <span className="inline-block text-[9px] font-bold text-purple-400 bg-purple-500/10 border border-purple-500/20 px-1.5 py-0.5 rounded">
+                                  📱 {tx.provider || 'WALLET'}
+                                </span>
+                              )}
+                            </div>
                           </td>
 
                           {/* Category & Subcategory */}
@@ -321,7 +339,7 @@ export default function TransactionsPage() {
                                   {/* Raw Narration */}
                                   <div className="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800">
                                     <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5">
-                                      Original Raw Statement Narration (PDF Input)
+                                      Original Raw Statement Narration
                                     </span>
                                     <p className="font-mono text-slate-200 text-xs bg-slate-950/80 p-2.5 rounded border border-slate-800/80 break-words leading-relaxed">
                                       {tx.rawNarration || tx.description}
@@ -331,7 +349,7 @@ export default function TransactionsPage() {
                                   {/* Classification Analysis */}
                                   <div className="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800 flex flex-col gap-2">
                                     <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-                                      AI Intelligence Extraction & Mapping
+                                      Categorization Analysis
                                     </span>
 
                                     <div className="grid grid-cols-2 gap-3 mt-1">
@@ -344,14 +362,14 @@ export default function TransactionsPage() {
                                         <span className="font-semibold text-blue-400">{tx.channel || 'Bank Direct'}</span>
                                       </div>
                                       <div>
-                                        <span className="text-[11px] text-slate-400 block">Direction Evidence:</span>
-                                        <span className={`font-semibold ${isCredit ? 'text-emerald-400' : 'text-rose-400'}`}>
-                                          {isCredit ? 'Credit Column (Inflow)' : 'Debit Column (Outflow)'}
+                                        <span className="text-[11px] text-slate-400 block">Source:</span>
+                                        <span className={`font-semibold ${tx.source === 'WALLET' ? 'text-purple-400' : 'text-blue-400'}`}>
+                                          {tx.source === 'WALLET' ? `📱 ${tx.provider || 'Wallet'}` : `🏦 ${tx.provider || 'Bank'}`}
                                         </span>
                                       </div>
                                       <div>
                                         <span className="text-[11px] text-slate-400 block">Confidence Score:</span>
-                                        <span className="font-semibold text-purple-400 uppercase">{conf}</span>
+                                        <span className="font-semibold text-purple-400 uppercase">{tx.confidence || 'medium'}</span>
                                       </div>
                                       {tx.referenceId && (
                                         <div className="col-span-2">
@@ -362,6 +380,32 @@ export default function TransactionsPage() {
                                     </div>
                                   </div>
                                 </div>
+
+                                {/* WHY Explanation */}
+                                {tx.classificationReason && (
+                                  <div className="bg-blue-500/5 border border-blue-500/20 rounded-xl p-3.5">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400 block mb-1.5">💡 Why This Category?</span>
+                                    <p className="text-slate-300 text-xs leading-relaxed">{tx.classificationReason}</p>
+                                  </div>
+                                )}
+
+                                {/* Duplicate / Review Flags */}
+                                {(tx.isDuplicate || tx.needsReview) && (
+                                  <div className="flex gap-3">
+                                    {tx.isDuplicate && (
+                                      <div className="flex-1 bg-yellow-500/5 border border-yellow-500/20 rounded-xl p-3">
+                                        <span className="text-[10px] font-bold uppercase text-yellow-400">⚠ Possible Duplicate</span>
+                                        <p className="text-yellow-300/70 text-xs mt-1">This transaction has similar date, amount and narration to an existing record. Please verify before reporting.</p>
+                                      </div>
+                                    )}
+                                    {tx.needsReview && (
+                                      <div className="flex-1 bg-orange-500/5 border border-orange-500/20 rounded-xl p-3">
+                                        <span className="text-[10px] font-bold uppercase text-orange-400">🔍 Needs Review</span>
+                                        <p className="text-orange-300/70 text-xs mt-1">No matching merchant or rule found. Category is a best-guess. You may relabel manually.</p>
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
                               </div>
                             </td>
                           </tr>

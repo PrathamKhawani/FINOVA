@@ -145,4 +145,39 @@ export const api = {
 
   // Dashboard
   getDashboardSummary: () => apiFetch('/dashboard/summary'),
+
+  // Wallet Import
+  uploadWalletStatement: (formData: FormData) =>
+    apiFetch('/wallet/upload', { method: 'POST', body: formData }),
+
+  // Budget
+  getBudgets: (month?: string) => {
+    const qs = month ? `?month=${month}` : '';
+    return apiFetch(`/budget${qs}`);
+  },
+  createBudget: (body: { category: string; limitAmount: number; monthYear?: string; subcategory?: string }) =>
+    apiFetch('/budget', { method: 'POST', body: JSON.stringify(body) }),
+  updateBudget: (id: string, body: any) =>
+    apiFetch(`/budget/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteBudget: (id: string) =>
+    apiFetch(`/budget/${id}`, { method: 'DELETE' }),
+
+  // Savings Goals
+  getSavingsGoals: () => apiFetch('/savings/goals'),
+  createSavingsGoal: (body: { name: string; targetAmount: number; savedAmount?: number; targetDate?: string; emoji?: string }) =>
+    apiFetch('/savings/goals', { method: 'POST', body: JSON.stringify(body) }),
+  updateSavingsGoal: (id: string, body: any) =>
+    apiFetch(`/savings/goals/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteSavingsGoal: (id: string) =>
+    apiFetch(`/savings/goals/${id}`, { method: 'DELETE' }),
+
+  // Loans & EMI
+  getLoans: () => apiFetch('/loans'),
+  createLoan: (body: any) =>
+    apiFetch('/loans', { method: 'POST', body: JSON.stringify(body) }),
+  updateLoan: (id: string, body: any) =>
+    apiFetch(`/loans/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteLoan: (id: string) =>
+    apiFetch(`/loans/${id}`, { method: 'DELETE' }),
 };
+

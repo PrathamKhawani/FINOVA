@@ -8,40 +8,59 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response): Prom
   try {
     const userId = req.user!.userId;
 
-    // Get all transactions for user via their statements
+    // Count all statements
+    const statementsCount = await prisma.bankStatement.count({ where: { userId } });
+
+    // Get all transactions for user
     const transactions = await prisma.transaction.findMany({
       where: { statement: { userId } },
       orderBy: { date: 'asc' },
+      select: {
+        id: true, date: true, description: true, rawNarration: true,
+        merchantName: true, counterparty: true, channel: true,
+        amount: true, type: true, category: true, subcategory: true,
+        confidence: true, balance: true, source: true, provider: true,
+        isDuplicate: true, needsReview: true,
+      },
     });
 
-    // Run Financial Intelligence Analysis Engine
-    const analysis = analyzeFinancials(transactions);
+    // Separate bank vs wallet
+    const bankTxns = transactions.filter(t => t.source === 'BANK' || !t.source);
+    const walletTxns = transactions.filter(t => t.source === 'WALLET');
 
-    // Get statement count
-    const statementsCount = await prisma.bankStatement.count({ where: { userId } });
+    const bankCredits = bankTxns.filter(t => t.type === 'credit').reduce((s, t) => s + t.amount, 0);
+    const bankDebits = bankTxns.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0);
+    const walletCredits = walletTxns.filter(t => t.type === 'credit').reduce((s, t) => s + t.amount, 0);
+    const walletDebits = walletTxns.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0);
+    const duplicateCount = transactions.filter(t => t.isDuplicate).length;
+    const needsReviewCount = transactions.filter(t => t.needsReview).length;
 
-    // Recent transactions (last 10 desc)
-    const recentTransactions = [...transactions]
-      .sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime())
-      .slice(0, 10);
+    // Run financial intelligence on non-duplicate transactions
+    const cleanTxns = transactions.filter(t => !t.isDuplicate);
+    const intelligence = analyzeFinancials(cleanTxns);
 
     res.json({
       success: true,
       data: {
-        summary: {
-          ...analysis.summary,
-          statementsCount,
+        statementsCount,
+        transactionCount: transactions.length,
+        duplicateCount,
+        needsReviewCount,
+        bankSummary: {
+          totalCredits: Math.round(bankCredits * 100) / 100,
+          totalDebits: Math.round(bankDebits * 100) / 100,
+          transactionCount: bankTxns.length,
         },
-        categoryBreakdown: analysis.topCategories,
-        incomeBreakdown: analysis.incomeCategories,
-        topMerchants: analysis.topMerchants,
-        insights: analysis.insights,
-        forecast: analysis.forecast,
-        recentTransactions,
+        walletSummary: {
+          totalCredits: Math.round(walletCredits * 100) / 100,
+          totalDebits: Math.round(walletDebits * 100) / 100,
+          transactionCount: walletTxns.length,
+        },
+        ...intelligence,
       },
     });
   } catch (error) {
     console.error('Dashboard error:', error);
-    res.status(500).json({ success: false, message: 'Failed to load dashboard data' });
+    res.status(500).json({ success: false, message: 'Failed to fetch dashboard data' });
   }
 };

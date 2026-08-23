@@ -1,15 +1,21 @@
 /**
- * FINOVA Layered Categorization & Entity Extraction Engine v4
+ * FINOVA Layered Categorization & Entity Extraction Engine v5
  *
- * Implements a multi-layer classification strategy:
- *  Layer 1: Direction Evidence (Debit vs Credit)
- *  Layer 2: Channel Identification (UPI, NEFT, IMPS, POS, ACH, EFT, RTGS, ATM, Card, Cheque, Direct Debit)
- *  Layer 3: Counterparty / Entity / Person Extraction
- *  Layer 4: Insurance / Premium & Specific Financial Pattern Rules
- *  Layer 5: Person-to-Person (P2P) Transfer Detection (prevents misclassifying individuals as Food/Shopping/Salary)
- *  Layer 6: Merchant & Entity Mappings
- *  Layer 7: Fallback & Confidence Scoring ("Needs Review" only when evidence is insufficient)
+ * Priority Pipeline (executed in order):
+ *  1. Direction evidence (credit vs debit)
+ *  2. Channel identification (UPI/NEFT/IMPS/Card/ATM/ACH)
+ *  3. Merchant Knowledge Base lookup (200+ merchants — highest accuracy)
+ *  4. Insurance / financial product patterns
+ *  5. Income patterns (salary, refund, interest)
+ *  6. Person-to-Person detection (improved Indian name heuristic)
+ *  7. General keyword rules
+ *  8. Fallback with Needs Review flag
+ *
+ * A known merchant from the KB always takes priority over generic keywords.
+ * Person names in UPI narrations are NOT misclassified as business categories.
  */
+
+import { lookupMerchant } from './merchant-kb.service';
 
 export interface CategorizationResult {
   category: string;
@@ -20,9 +26,10 @@ export interface CategorizationResult {
   confidence: 'high' | 'medium' | 'low';
   referenceId: string | null;
   needsReview: boolean;
+  classificationReason: string;  // WHY this category was assigned
 }
 
-// ── 1. Reference ID Extraction ───────────────────────────────────────────────
+// ── Reference ID Extraction ───────────────────────────────────────────────────
 export function extractReferenceId(description: string): string | null {
   const refPatterns = [
     /\b(?:NEFT|IMPS|UPI|REF|UTR|TXN|CHK|POS)[-/\s:]*([A-Za-z0-9]{8,22})\b/i,
@@ -35,55 +42,57 @@ export function extractReferenceId(description: string): string | null {
   return null;
 }
 
-// ── 2. Payment Channel Detection ─────────────────────────────────────────────
+// ── Channel Detection ─────────────────────────────────────────────────────────
 export function detectPaymentChannel(description: string): string {
   const upper = description.toUpperCase();
-  if (upper.includes('UPI/')) return 'UPI';
+  if (upper.includes('UPI/') || upper.includes('UPI-') || upper.includes('@')) return 'UPI';
   if (upper.includes('NEFT')) return 'NEFT';
   if (upper.includes('IMPS')) return 'IMPS';
-  if (upper.includes('POS') || upper.includes('CARD PAYMENT')) return 'Card / POS';
+  if (upper.includes('RTGS')) return 'RTGS';
+  if (upper.includes('POS') || upper.includes('CARD PAYMENT') || upper.includes('CARD PMT')) return 'Card / POS';
   if (upper.includes('ATM') || upper.includes('CASH WDR') || upper.includes('WITHDRAWAL')) return 'ATM / Cash';
-  if (upper.includes('ACH/') || upper.includes('DIRECT DEBIT') || upper.includes('STANDING ORDER')) return 'Direct Debit / ACH';
-  if (upper.includes('APB-') || upper.includes('EFT') || upper.includes('RTGS')) return 'Bank Transfer / RTGS';
-  if (upper.includes('CHK') || upper.includes('CHEQUE')) return 'Cheque';
+  if (upper.includes('ACH/') || upper.includes('DIRECT DEBIT') || upper.includes('STANDING ORDER') || upper.includes('NACH')) return 'Direct Debit / ACH';
+  if (upper.includes('EFT') || upper.includes('APB-')) return 'Electronic Fund Transfer';
+  if (upper.includes('CHQ') || upper.includes('CHK') || upper.includes('CHEQUE') || upper.includes('CHECK')) return 'Cheque';
+  // Wallet channels
+  if (upper.includes('PHONEPE') || upper.includes('PHONE PE')) return 'PhonePe';
+  if (upper.includes('PAYTM')) return 'Paytm';
+  if (upper.includes('GPAY') || upper.includes('GOOGLE PAY')) return 'Google Pay';
   return 'Bank Transfer';
 }
 
-// ── 3. Counterparty & Entity Extraction ──────────────────────────────────────
+// ── Counterparty & Entity Extraction ─────────────────────────────────────────
 export function extractCounterparty(description: string): { counterparty: string; merchantName: string } {
   let text = description.trim();
 
-  // Pattern: UPI/ref/CR/Name or UPI/ref/DR/Name
-  const upiMatch = text.match(/UPI\/[A-Za-z0-9]+\/(?:CR|DR)\/([^/]+)/i);
+  // UPI narration: UPI/ref/CR/Name or UPI/DR/Name@vpa
+  const upiMatch = text.match(/UPI\/[A-Za-z0-9.]+\/(?:CR|DR)\/([^/\n]+)/i);
   if (upiMatch && upiMatch[1]) {
-    const rawName = upiMatch[1].replace(/[-_*,.:;]/g, ' ').replace(/\s+/g, ' ').trim();
-    const cleanName = formatTitleCase(rawName);
-    return { counterparty: cleanName, merchantName: cleanName };
+    const rawName = upiMatch[1].split('@')[0].replace(/[-_*,.:;]/g, ' ').replace(/\s+/g, ' ').trim();
+    return { counterparty: formatTitleCase(rawName), merchantName: formatTitleCase(rawName) };
   }
 
-  // Pattern: APB-CR-KNOWLEDGECONSORGUJHD or similar APB/EFT formats
+  // UPI VPA pattern: Name@bankname
+  const vpaMatch = text.match(/([A-Za-z][A-Za-z0-9._-]+)@[a-zA-Z]+/);
+  if (vpaMatch && vpaMatch[1]) {
+    const name = vpaMatch[1].replace(/[._-]/g, ' ');
+    return { counterparty: formatTitleCase(name), merchantName: formatTitleCase(name) };
+  }
+
+  // APB/EFT format: APB-CR-MERCHANTNAME
   const apbMatch = text.match(/APB-(?:CR|DR)-([A-Za-z0-9]+)/i);
   if (apbMatch && apbMatch[1]) {
-    const raw = apbMatch[1]
-      .replace(/KNOWLEDGECONSORGUJHD/i, 'Knowledge Consortium Gujarat')
-      .replace(/([a-z])([A-Z])/g, '$1 $2');
-    const clean = formatTitleCase(raw);
+    const clean = formatTitleCase(apbMatch[1].replace(/([a-z])([A-Z])/g, '$1 $2'));
     return { counterparty: clean, merchantName: clean };
   }
 
-  // Pattern: PREMIUM DUE COLL: 12/2025 or INSURANCE PREMIUM
-  if (/PREMIUM\s*DUE|POLICY\s*PREMIUM|LIC\s*PREMIUM/i.test(text)) {
-    return { counterparty: 'Insurance Premium Collection', merchantName: 'Insurance Premium Collection' };
-  }
-
-  // Strip ref numbers, channels, dates
+  // Strip technical noise
   let cleaned = text
     .replace(/\b(?:NEFT|IMPS|UPI|REF|UTR|TXN|CHK|POS)[-/\s:]*[A-Za-z0-9]{6,22}\b/gi, '')
     .replace(/\b\d{10,16}\b/g, '')
-    .replace(/\b(?:UPI|NEFT|IMPS|POS|ACH|EFT|RTGS|BIL|CR|DR|PG|CARD PAYMENT|DIRECT DEBIT)[-/\s:]+/gi, '')
+    .replace(/\b(?:UPI|NEFT|IMPS|POS|ACH|EFT|RTGS|CR|DR|NACH|CARD)[-/\s:]+/gi, '')
     .replace(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s*,?\s*\d{0,4}\b/gi, '')
-    .replace(/\b\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}\b/g, '')
-    .replace(/\b(?:payment|online|retail|store|pvt|ltd|inc|llp|india|corp|bank|timed|\d{1,2}:\d{2})\b/gi, '')
+    .replace(/\b\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}\b/g, '')
     .replace(/[-_*,.:;/]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
@@ -92,8 +101,7 @@ export function extractCounterparty(description: string): { counterparty: string
     cleaned = text.split(' ').slice(0, 3).join(' ').trim();
   }
 
-  const formatted = formatTitleCase(cleaned);
-  return { counterparty: formatted, merchantName: formatted };
+  return { counterparty: formatTitleCase(cleaned), merchantName: formatTitleCase(cleaned) };
 }
 
 function formatTitleCase(str: string): string {
@@ -105,35 +113,78 @@ function formatTitleCase(str: string): string {
     .trim();
 }
 
-// ── 4. Person Name Heuristic (Individual Transfer Detection) ───────────────────
-function isLikelyIndividualPersonName(name: string): boolean {
-  const lower = name.toLowerCase();
-  
-  // Non-person keywords
-  const businessKeywords = [
-    'pvt', 'ltd', 'corp', 'store', 'shop', 'deli', 'textile', 'mart', 'market',
-    'bank', 'petrol', 'fuel', 'food', 'restaurant', 'cafe', 'pharmacy', 'medical',
-    'hospital', 'telecom', 'jio', 'airtel', 'amazon', 'uber', 'swiggy', 'zomato',
-    'netflix', 'insurance', 'premium', 'loans', 'emi', 'sip', 'zerodha', 'groww',
-    'electronics', 'digital', 'solutions', 'technologies', 'infotech', 'agency',
-    'services', 'consortium', 'society', 'club', 'trust'
-  ];
+// ── Improved Person Name Detection ────────────────────────────────────────────
+// Common Indian first names list (150+ names) for accurate P2P detection
+const INDIAN_FIRST_NAMES = new Set([
+  'aarav', 'aditya', 'ajay', 'akash', 'amit', 'amol', 'amrita', 'ananya', 'anil', 'anjali',
+  'ankit', 'ankita', 'anuj', 'anup', 'arjun', 'aryan', 'asha', 'ashish', 'ashok', 'avinash',
+  'deepa', 'deepak', 'devesh', 'dhruv', 'divya', 'gaurav', 'geeta', 'gopal', 'hemant',
+  'ishaan', 'isha', 'jayesh', 'jyoti', 'karan', 'kartik', 'kavita', 'kishan', 'komal',
+  'krishna', 'kunal', 'lata', 'lalit', 'lokesh', 'mahesh', 'manish', 'manoj', 'meena',
+  'mihir', 'mohan', 'mohit', 'mukesh', 'namita', 'neeraj', 'neha', 'nilesh', 'niraj',
+  'nirmal', 'pankaj', 'pooja', 'pratham', 'priya', 'priyanka', 'rahul', 'raj', 'rajesh',
+  'rakesh', 'ramesh', 'rashmi', 'ravi', 'reema', 'ritu', 'rohit', 'rupal', 'sachin',
+  'sagar', 'sandesh', 'sangita', 'santosh', 'sapna', 'saurabh', 'seema', 'shilpa',
+  'shivam', 'shivani', 'shruti', 'smita', 'sneha', 'sonu', 'sonam', 'sudhir', 'suresh',
+  'sushil', 'swati', 'tarun', 'umesh', 'vaibhav', 'vijay', 'vikas', 'vinay', 'vineet',
+  'vishal', 'vivek', 'yogesh', 'yash', 'yashwant', 'zara', 'zoya',
+  // Common names across all regions
+  'abhi', 'akshi', 'alok', 'amey', 'anand', 'anisha', 'arpit', 'arvind',
+  'bhavesh', 'chirag', 'darshan', 'dinesh', 'girish', 'hardik', 'harish',
+  'harsh', 'jatin', 'kamlesh', 'kapil', 'keyur', 'khushal', 'mayur', 'mitesh',
+  'mukund', 'naresh', 'nidhi', 'nimesh', 'paresh', 'parth', 'piyush',
+  'praful', 'pramod', 'prasad', 'prashant', 'pratik', 'puneet', 'purvi',
+  'ramana', 'rishi', 'rohan', 'rupesh', 'rushabh', 'sahil', 'sailesh',
+  'saket', 'salman', 'sameer', 'sanjay', 'satish', 'shailesh', 'shekhar',
+  'shubham', 'siddhant', 'siddharth', 'sohan', 'subodh', 'sunil', 'surendra',
+  'tejal', 'tejas', 'tushar', 'uday', 'umang', 'vedant', 'vimal', 'vinod',
+  'vipin', 'vipul', 'viral', 'vishnu', 'vraj', 'yagnesh',
+]);
 
-  if (businessKeywords.some(k => lower.includes(k))) return false;
+const BUSINESS_KEYWORDS = [
+  'pvt', 'ltd', 'corp', 'store', 'shop', 'deli', 'textile', 'mart', 'market', 'centre',
+  'bank', 'petrol', 'fuel', 'food', 'restaurant', 'cafe', 'pharmacy', 'medical', 'clinic',
+  'hospital', 'telecom', 'telecomp', 'jio', 'airtel', 'amazon', 'uber', 'swiggy', 'zomato',
+  'flipkart', 'netflix', 'hotstar', 'insurance', 'premium', 'loans', 'emi', 'sip', 'zerodha',
+  'groww', 'electronics', 'digital', 'solutions', 'technologies', 'infotech', 'agency',
+  'services', 'consortium', 'society', 'club', 'trust', 'foundation', 'institute', 'college',
+  'school', 'university', 'finance', 'capital', 'securities', 'ventures', 'enterprises',
+  'industries', 'trading', 'travels', 'logistics', 'consultants', 'associates',
+];
 
-  // Single word or 2-3 word human names like "NILESH K", "SANTOSH", "RAMESH SHARMA", "PRIYA M"
-  const words = name.trim().split(/\s+/);
-  if (words.length >= 1 && words.length <= 3) {
-    // If words are short or standard name structures
-    if (words.every(w => /^[A-Za-z.]{1,20}$/.test(w))) {
-      return true;
-    }
+export function isLikelyPersonName(name: string): boolean {
+  const lower = name.toLowerCase().trim();
+  const words = lower.split(/\s+/).filter(w => w.length > 0);
+
+  // Must be 1–3 words
+  if (words.length === 0 || words.length > 3) return false;
+
+  // If any business keyword present → not a person
+  if (BUSINESS_KEYWORDS.some(k => lower.includes(k))) return false;
+
+  // If all words are alphabetic (names don't have numbers)
+  if (!words.every(w => /^[a-z.]{1,20}$/.test(w))) return false;
+
+  // First word matches known Indian first name → strong signal
+  if (INDIAN_FIRST_NAMES.has(words[0])) return true;
+
+  // Single initial + full name pattern (e.g., "S SHARMA", "K PATEL")
+  if (words.length === 2 && words[0].length === 1 && /^[a-z]$/.test(words[0])) return true;
+
+  // Name + single initial at end (e.g., "RAHUL K")
+  if (words.length === 2 && words[1].length === 1 && INDIAN_FIRST_NAMES.has(words[0])) return true;
+
+  // Fallback: 2 words, both look like names (no digits, length 3-15)
+  if (words.length === 2 && words.every(w => w.length >= 3 && w.length <= 15)) {
+    // Conservative: only if first word is a known name or second word looks like a surname
+    if (INDIAN_FIRST_NAMES.has(words[0]) || INDIAN_FIRST_NAMES.has(words[1])) return true;
   }
+
   return false;
 }
 
-// ── 5. Layered Rules Schema ───────────────────────────────────────────────────
-interface CategorizationRule {
+// ── Income Pattern Rules ──────────────────────────────────────────────────────
+interface CategoryRule {
   category: string;
   subcategory: string;
   confidence: 'high' | 'medium' | 'low';
@@ -143,276 +194,247 @@ interface CategorizationRule {
   isDebitOnly?: boolean;
 }
 
-const CATEGORIZATION_RULES: CategorizationRule[] = [
-  // ── INSURANCE & PREMIUM (Checked first to avoid misclassifications) ──
-  {
-    category: 'Insurance & Premium',
-    subcategory: 'Policy Premium',
-    confidence: 'high',
-    keywords: ['premium due', 'premium coll', 'policy premium', 'lic', 'star health', 'bajaj allianz', 'hdfc ergo', 'icici lombard', 'tata aig', 'insurance premium', 'max life', 'sbi life'],
-    patterns: [/premium\s*(due|coll|pmt|payment)?/i, /insurance/i, /\blic\b/i],
-  },
-
-  // ── INCOME & SALARY ──
+const INCOME_RULES: CategoryRule[] = [
   {
     category: 'Income',
     subcategory: 'Salary',
     confidence: 'high',
-    keywords: ['salary', 'sal credit', 'payroll', 'stipend', 'wages', 'sal_credit'],
-    patterns: [/sal(ary)?[\s_-]/i, /salary\s*credit/i, /yourjob.*biweekly/i, /biweekly.*pay/i],
+    keywords: ['salary', 'sal credit', 'payroll', 'stipend', 'wages', 'sal_credit', 'biweekly pay', 'monthly pay'],
+    patterns: [/sal(ary)?[\s_-]/i, /salary\s*credit/i, /biweekly.*pay/i, /pay.*biweekly/i, /payroll/i],
     isCreditOnly: true,
   },
   {
     category: 'Income',
     subcategory: 'Business Income',
     confidence: 'high',
-    keywords: ['freelance', 'consulting', 'consultancy', 'invoice paid', 'client payment', 'direct deposit', 'vendor credit'],
-    patterns: [/direct\s*deposit/i, /freelance/i, /consulting/i],
+    keywords: ['freelance', 'consulting', 'invoice paid', 'client payment', 'vendor credit'],
+    patterns: [/freelance/i, /consulting/i],
     isCreditOnly: true,
   },
   {
     category: 'Income',
-    subcategory: 'Interest Income',
+    subcategory: 'Interest & Dividend',
     confidence: 'high',
-    keywords: ['interest credit', 'fd interest', 'savings interest', 'dividend', 'int credit'],
-    patterns: [/interest\s*credit/i, /dividend/i],
+    keywords: ['interest credit', 'fd interest', 'savings interest', 'dividend', 'int credit', 'int cr'],
+    patterns: [/interest\s*credit/i, /dividend/i, /\bint\s*cr\b/i],
     isCreditOnly: true,
   },
   {
     category: 'Income',
     subcategory: 'Refund & Cashback',
     confidence: 'high',
-    keywords: ['refund', 'reversal', 'cashback', 'reward credit', 'reimbursement'],
-    patterns: [/refund/i, /cashback/i, /reversal/i],
+    keywords: ['refund', 'reversal', 'cashback', 'reward credit', 'reimbursement', 'cashbk'],
+    patterns: [/refund/i, /cashback/i, /cash\s*bk/i, /reversal/i],
     isCreditOnly: true,
   },
+  {
+    category: 'Income',
+    subcategory: 'Grant & Official Disbursement',
+    confidence: 'medium',
+    keywords: ['consortium', 'gujarat', 'government', 'govt', 'trust', 'agency disbursement'],
+    patterns: [/consortium/i, /govt/i, /government/i],
+    isCreditOnly: true,
+  },
+];
 
-  // ── FOOD & DINING ──
+const EXPENSE_RULES: CategoryRule[] = [
+  // Insurance first (prevents misclassification)
   {
-    category: 'Food & Dining',
-    subcategory: 'Food Delivery',
+    category: 'Insurance & Premiums',
+    subcategory: 'Policy Premium',
     confidence: 'high',
-    keywords: ['swiggy', 'zomato', 'blinkit food', 'faasos', 'freshmenu', 'dominos', 'pizza hut'],
-    patterns: [/swiggy/i, /zomato/i, /domino/i],
+    keywords: ['premium due', 'premium coll', 'policy premium', 'insurance premium', 'premium pmt'],
+    patterns: [/premium\s*(due|coll|pmt|payment)?/i, /policy\s*premium/i],
     isDebitOnly: true,
   },
-  {
-    category: 'Food & Dining',
-    subcategory: 'Restaurants & Dining',
-    confidence: 'high',
-    keywords: ['mcdonald', 'mcdonalds', 'burger king', 'kfc', 'starbucks', 'cafe', 'restaurant', 'deli', 'barbeque', 'haldiram', 'haldirams'],
-    patterns: [/restaurant/i, /deli/i, /cafe/i, /starbucks/i, /mcdonald/i],
-    isDebitOnly: true,
-  },
-
-  // ── GROCERIES ──
-  {
-    category: 'Groceries',
-    subcategory: 'Supermarket & Kirana',
-    confidence: 'high',
-    keywords: ['bigbasket', 'big basket', 'grofers', 'blinkit', 'jiomart', 'dmart', 'd-mart', 'more supermarket', 'reliance fresh', 'nature basket', 'kirana', 'vegetables', 'supermarket'],
-    patterns: [/bigbasket/i, /dmart/i, /grocery/i, /supermarket/i],
-    isDebitOnly: true,
-  },
-
-  // ── SHOPPING ──
-  {
-    category: 'Shopping',
-    subcategory: 'Online Shopping',
-    confidence: 'high',
-    keywords: ['amazon', 'flipkart', 'myntra', 'ajio', 'meesho', 'nykaa', 'snapdeal', 'tata cliq'],
-    patterns: [/amazon/i, /flipkart/i, /myntra/i],
-    isDebitOnly: true,
-  },
-  {
-    category: 'Shopping',
-    subcategory: 'Apparel & Fashion',
-    confidence: 'high',
-    keywords: ['vjay text', 'vijay text', 'textile', 'clothing', 'h&m', 'zara', 'westside', 'pantaloons', 'max fashion', 'trends'],
-    patterns: [/textile/i, /garment/i, /fashion/i, /vjay\s*text/i],
-    isDebitOnly: true,
-  },
-  {
-    category: 'Shopping',
-    subcategory: 'Retail & Electronics',
-    confidence: 'high',
-    keywords: ['reliance digital', 'croma', 'vijay sales', 'decathlon', 'jewelers', 'jewellers', 'jewelry', 'comco citi'],
-    patterns: [/croma/i, /jewel/i, /decathlon/i, /comco/i],
-    isDebitOnly: true,
-  },
-
-  // ── TRAVEL & TRANSPORT ──
-  {
-    category: 'Travel & Transport',
-    subcategory: 'Cabs & Rides',
-    confidence: 'high',
-    keywords: ['uber', 'ola', 'rapido', 'taxi', 'cab', 'rickshaw'],
-    patterns: [/uber/i, /ola[\s_-]/i, /rapido/i],
-    isDebitOnly: true,
-  },
-  {
-    category: 'Travel & Transport',
-    subcategory: 'Railways',
-    confidence: 'high',
-    keywords: ['irctc', 'indian rail', 'railway', 'metro', 'bmtc', 'namma metro'],
-    patterns: [/irctc/i, /rail/i, /metro/i],
-    isDebitOnly: true,
-  },
-  {
-    category: 'Travel & Transport',
-    subcategory: 'Airlines & Hotels',
-    confidence: 'high',
-    keywords: ['indigo', 'air india', 'spicejet', 'makemytrip', 'yatra', 'cleartrip', 'redbus', 'flight', 'hotel booking'],
-    patterns: [/indigo/i, /makemytrip/i],
-    isDebitOnly: true,
-  },
-
-  // ── FUEL ──
-  {
-    category: 'Fuel',
-    subcategory: 'Petrol & Gas Stations',
-    confidence: 'high',
-    keywords: ['petrol', 'diesel', 'fuel', 'bharat petroleum', 'hp petro', 'iocl', 'indian oil', 'shell', 'cng', 'nayara', 'bpcl', 'hpcl', 'petrol station'],
-    patterns: [/petrol/i, /bpcl/i, /hpcl/i, /iocl/i, /fuel/i],
-    isDebitOnly: true,
-  },
-
-  // ── RENT ──
+  // Rent
   {
     category: 'Rent',
     subcategory: 'House & Apartment Rent',
     confidence: 'high',
-    keywords: ['apartment rent', 'house rent', 'pg rent', 'monthly rent', 'flat rent', 'rent payment'],
+    keywords: ['house rent', 'apartment rent', 'flat rent', 'pg rent', 'monthly rent', 'rent payment'],
     patterns: [/rent/i, /lease/i],
     isDebitOnly: true,
   },
-
-  // ── UTILITIES & BILLS ──
-  {
-    category: 'Utilities & Bills',
-    subcategory: 'Electricity & Gas',
-    confidence: 'high',
-    keywords: ['electricity', 'water bill', 'gas bill', 'bescom', 'msedcl', 'bses', 'tata power'],
-    patterns: [/electricity/i, /gas\s*bill/i],
-    isDebitOnly: true,
-  },
-  {
-    category: 'Utilities & Bills',
-    subcategory: 'Mobile & Internet',
-    confidence: 'high',
-    keywords: ['jio', 'airtel', 'bsnl', 'vodafone', 'vi postpaid', 'broadband', 'wifi', 'tata sky', 'dish tv', 'mobile bill', 'recharge', 'green mobile'],
-    patterns: [/jio/i, /airtel/i, /broadband/i, /mobile/i],
-    isDebitOnly: true,
-  },
-
-  // ── HEALTHCARE ──
-  {
-    category: 'Healthcare',
-    subcategory: 'Pharmacy & Medical',
-    confidence: 'high',
-    keywords: ['apollo', 'medplus', 'netmeds', 'pharmeasy', '1mg', 'pharmacy', 'medical', 'hospital', 'clinic', 'doctor', 'diagnostic', 'chemist'],
-    patterns: [/apollo/i, /pharmacy/i, /medical/i, /hospital/i],
-    isDebitOnly: true,
-  },
-
-  // ── EDUCATION ──
-  {
-    category: 'Education',
-    subcategory: 'Tuition & Courses',
-    confidence: 'high',
-    keywords: ['udemy', 'coursera', 'byju', 'unacademy', 'school fee', 'college fee', 'tuition', 'coaching', 'university'],
-    patterns: [/udemy/i, /coursera/i, /tuition/i, /fee/i],
-    isDebitOnly: true,
-  },
-
-  // ── ENTERTAINMENT & SUBSCRIPTIONS ──
-  {
-    category: 'Subscriptions',
-    subcategory: 'Streaming Services',
-    confidence: 'high',
-    keywords: ['netflix', 'hotstar', 'spotify', 'amazon prime', 'prime video', 'youtube premium', 'zee5', 'sonyliv', 'apple tv'],
-    patterns: [/netflix/i, /spotify/i, /hotstar/i, /prime/i],
-    isDebitOnly: true,
-  },
-
-  // ── EMI & LOANS ──
+  // EMI & Loans
   {
     category: 'EMI & Loans',
-    subcategory: 'Home & Auto EMI',
+    subcategory: 'Home & Auto Loan',
     confidence: 'high',
-    keywords: ['home loan', 'housing loan', 'car loan', 'auto loan', 'hdfc home loan'],
-    patterns: [/home\s*loan/i, /car\s*loan/i],
+    keywords: ['home loan', 'housing loan', 'car loan', 'auto loan', 'hdfc home loan', 'sbi home loan'],
+    patterns: [/home\s*loan/i, /car\s*loan/i, /housing\s*loan/i],
     isDebitOnly: true,
   },
   {
     category: 'EMI & Loans',
-    subcategory: 'Personal Loan Payment',
+    subcategory: 'Personal & Consumer Loan',
     confidence: 'high',
-    keywords: ['emi', 'bajaj finance', 'personal loan', 'instalment', 'installment', 'emi payment'],
-    patterns: [/emi/i, /loan/i],
+    keywords: ['emi', 'bajaj finance', 'personal loan', 'instalment', 'installment', 'emi payment', 'loan emi', 'nach emi'],
+    patterns: [/\bemi\b/i, /loan\s*repay/i, /nach.*emi/i],
     isDebitOnly: true,
   },
-
-  // ── INVESTMENTS ──
+  // Investments
   {
     category: 'Investments',
     subcategory: 'Mutual Fund SIP',
     confidence: 'high',
-    keywords: ['mutual fund sip', 'sip payment', 'zerodha coin', 'mf sip', 'groww sip'],
-    patterns: [/sip/i, /mutual\s*fund/i],
+    keywords: ['sip payment', 'mutual fund sip', 'mf sip', 'sip debit'],
+    patterns: [/\bsip\b/i, /mutual\s*fund/i],
     isDebitOnly: true,
   },
-  {
-    category: 'Investments',
-    subcategory: 'Stocks & Wealth',
-    confidence: 'high',
-    keywords: ['zerodha', 'groww', 'upstox', 'angel one', 'nps', 'ppf', 'fixed deposit', 'fd creation', 'demat', 'stock purchase'],
-    patterns: [/zerodha/i, /groww/i, /upstox/i, /demat/i],
-    isDebitOnly: true,
-  },
-
-  // ── ATM & CASH ──
+  // ATM & Cash
   {
     category: 'ATM & Cash',
-    subcategory: 'ATM Cash Withdrawal',
+    subcategory: 'Cash Withdrawal',
     confidence: 'high',
-    keywords: ['atm', 'cash withdrawal', 'atm wd', 'cash deposit', 'withdrawn'],
-    patterns: [/atm/i, /cash\s*withdrawal/i],
+    keywords: ['atm', 'cash withdrawal', 'cash wd', 'atm wd', 'withdrawn'],
+    patterns: [/\batm\b/i, /cash\s*withdrawal/i, /cash\s*wd/i],
   },
-
-  // ── BANK CHARGES ──
+  // Bank Charges
   {
     category: 'Bank Charges',
     subcategory: 'Service Fees',
     confidence: 'high',
-    keywords: ['bank charge', 'service charge', 'penalty', 'processing fee', 'sms charge', 'folio charge'],
-    patterns: [/bank\s*charge/i, /service\s*charge/i, /penalty/i],
+    keywords: ['bank charge', 'service charge', 'penalty charge', 'processing fee', 'sms charge', 'folio charge', 'annual fee'],
+    patterns: [/bank\s*charge/i, /service\s*charge/i, /\bpenalty\b/i, /annual\s*fee/i],
     isDebitOnly: true,
   },
-
-  // ── TAXES ──
+  // Utilities - electricity
+  {
+    category: 'Utilities & Bills',
+    subcategory: 'Electricity',
+    confidence: 'high',
+    keywords: ['electricity', 'electric bill', 'power bill', 'bescom', 'msedcl', 'bses', 'tata power', 'adani electricity'],
+    patterns: [/electricity/i, /electric\s*bill/i],
+    isDebitOnly: true,
+  },
+  {
+    category: 'Utilities & Bills',
+    subcategory: 'Gas & Water',
+    confidence: 'high',
+    keywords: ['water bill', 'gas bill', 'piped gas', 'mahanagar gas', 'indraprastha gas'],
+    patterns: [/gas\s*bill/i, /water\s*bill/i],
+    isDebitOnly: true,
+  },
+  // Mobile/Internet recharge
+  {
+    category: 'Utilities & Bills',
+    subcategory: 'Mobile & Internet',
+    confidence: 'high',
+    keywords: ['mobile recharge', 'broadband', 'wifi bill', 'postpaid bill', 'prepaid recharge'],
+    patterns: [/broadband/i, /mobile\s*recharge/i, /postpaid/i],
+    isDebitOnly: true,
+  },
+  // Healthcare
+  {
+    category: 'Healthcare',
+    subcategory: 'Pharmacy & Medical',
+    confidence: 'high',
+    keywords: ['pharmacy', 'medical store', 'hospital', 'clinic', 'doctor', 'diagnostic', 'chemist', 'health center'],
+    patterns: [/pharmacy/i, /medical\s*store/i, /hospital/i, /diagnostic/i],
+    isDebitOnly: true,
+  },
+  // Education
+  {
+    category: 'Education',
+    subcategory: 'School & College Fees',
+    confidence: 'high',
+    keywords: ['school fee', 'college fee', 'tuition fee', 'university fee', 'coaching', 'course fee'],
+    patterns: [/school\s*fee/i, /college\s*fee/i, /tuition/i, /coaching/i],
+    isDebitOnly: true,
+  },
+  // Fuel
+  {
+    category: 'Fuel',
+    subcategory: 'Petrol & CNG',
+    confidence: 'high',
+    keywords: ['petrol', 'diesel', 'fuel station', 'cng station', 'petrol station', 'fuel pump'],
+    patterns: [/petrol\s*station/i, /fuel\s*station/i, /fuel\s*pump/i, /\bcng\b/i],
+    isDebitOnly: true,
+  },
+  // Taxes
   {
     category: 'Taxes',
-    subcategory: 'Income & Direct Tax',
+    subcategory: 'Direct Tax',
     confidence: 'high',
-    keywords: ['tds', 'gst', 'income tax', 'advance tax', 'self assessment tax'],
-    patterns: [/income\s*tax/i, /tds/i, /gst/i],
+    keywords: ['income tax', 'advance tax', 'self assessment tax', 'tds payment'],
+    patterns: [/income\s*tax/i, /advance\s*tax/i, /\btds\b/i],
     isDebitOnly: true,
   },
 ];
 
-// ── 6. Main Layered Categorization Function ──────────────────────────────────
+// ── Main Categorization Function ──────────────────────────────────────────────
 export function categorizeTransaction(
   rawNarration: string,
-  isCredit: boolean
+  isCredit: boolean,
+  source: 'BANK' | 'WALLET' = 'BANK'
 ): CategorizationResult {
   const refId = extractReferenceId(rawNarration);
   const channel = detectPaymentChannel(rawNarration);
   const { counterparty, merchantName } = extractCounterparty(rawNarration);
   const lower = rawNarration.toLowerCase();
 
-  // Step A: Check Curated Categorization Rules
-  for (const rule of CATEGORIZATION_RULES) {
+  // ── Layer 1: Income Rules (credit-only, high confidence) ──────────────────
+  if (isCredit) {
+    for (const rule of INCOME_RULES) {
+      const matchKeyword = rule.keywords.some(k => lower.includes(k.toLowerCase()));
+      const matchPattern = rule.patterns?.some(p => p.test(rawNarration));
+      if (matchKeyword || matchPattern) {
+        return {
+          category: rule.category,
+          subcategory: rule.subcategory,
+          merchantName,
+          counterparty,
+          channel,
+          confidence: rule.confidence,
+          referenceId: refId,
+          needsReview: false,
+          classificationReason: `Matched income rule: "${rule.subcategory}" via keyword/pattern in narration`,
+        };
+      }
+    }
+  }
+
+  // ── Layer 2: Merchant Knowledge Base (highest accuracy for debit) ──────────
+  const kbMatch = lookupMerchant(rawNarration);
+  if (kbMatch) {
+    // Respect credit-only / debit-only constraints
+    if (kbMatch.isDebitOnly && isCredit) {
+      // Could be a refund from this merchant
+    } else if (kbMatch.isCreditOnly && !isCredit) {
+      // Skip
+    } else {
+      return {
+        category: kbMatch.category,
+        subcategory: kbMatch.subcategory,
+        merchantName: kbMatch.name,
+        counterparty: kbMatch.name,
+        channel,
+        confidence: kbMatch.confidence,
+        referenceId: refId,
+        needsReview: false,
+        classificationReason: `Merchant Knowledge Base: "${kbMatch.name}" → ${kbMatch.category} / ${kbMatch.subcategory}`,
+      };
+    }
+
+    // If merchant is debit-only but transaction is credit → likely refund
+    if (kbMatch.isDebitOnly && isCredit) {
+      return {
+        category: 'Income',
+        subcategory: 'Refund & Cashback',
+        merchantName: kbMatch.name,
+        counterparty: kbMatch.name,
+        channel,
+        confidence: 'high',
+        referenceId: refId,
+        needsReview: false,
+        classificationReason: `Refund detected from known merchant: "${kbMatch.name}"`,
+      };
+    }
+  }
+
+  // ── Layer 3: Expense Rule Matching ────────────────────────────────────────
+  for (const rule of EXPENSE_RULES) {
     if (rule.isCreditOnly && !isCredit) continue;
     if (rule.isDebitOnly && isCredit) continue;
 
@@ -429,63 +451,59 @@ export function categorizeTransaction(
         confidence: rule.confidence,
         referenceId: refId,
         needsReview: false,
+        classificationReason: `Matched expense rule: "${rule.subcategory}" via keyword/pattern in narration`,
       };
     }
   }
 
-  // Step B: Person-to-Person (P2P) Transfer Heuristic
-  // If transaction is via UPI / IMPS / NEFT and counterparty looks like an individual person
-  if ((channel === 'UPI' || channel === 'IMPS' || channel === 'NEFT') && isLikelyIndividualPersonName(counterparty)) {
+  // ── Layer 4: Person-to-Person Transfer Detection ──────────────────────────
+  const isPersonChannel = channel === 'UPI' || channel === 'IMPS' || channel === 'NEFT'
+    || channel === 'PhonePe' || channel === 'Paytm' || channel === 'Google Pay';
+
+  if (isPersonChannel && isLikelyPersonName(counterparty)) {
+    const direction = isCredit ? 'Inbound' : 'Outbound';
+    return {
+      category: 'Person-to-Person Transfer',
+      subcategory: `P2P Transfer (${direction})`,
+      merchantName: counterparty,
+      counterparty,
+      channel,
+      confidence: 'medium',
+      referenceId: refId,
+      needsReview: false,
+      classificationReason: `Counterparty "${counterparty}" matches Indian person name pattern. Classified as P2P rather than a business category.`,
+    };
+  }
+
+  // ── Layer 5: Wallet-specific patterns ────────────────────────────────────
+  if (source === 'WALLET') {
     if (isCredit) {
       return {
-        category: 'Person-to-Person Transfer',
-        subcategory: 'P2P Transfer (Inbound)',
+        category: 'Income',
+        subcategory: 'Wallet Top-Up / Credit',
         merchantName: counterparty,
         counterparty,
         channel,
         confidence: 'medium',
         referenceId: refId,
         needsReview: false,
-      };
-    } else {
-      return {
-        category: 'Person-to-Person Transfer',
-        subcategory: 'P2P Transfer (Outbound)',
-        merchantName: counterparty,
-        counterparty,
-        channel,
-        confidence: 'medium',
-        referenceId: refId,
-        needsReview: false,
+        classificationReason: 'Wallet credit — likely wallet top-up or refund',
       };
     }
   }
 
-  // Step C: Fallback by Direction when evidence is ambiguous
+  // ── Layer 6: Direction-based fallback ────────────────────────────────────
   if (isCredit) {
-    // If description contains grant/consortium/government keywords
-    if (/consortium|gujarat|govt|trust|agency|dept/i.test(rawNarration)) {
-      return {
-        category: 'Income',
-        subcategory: 'Grant & Official Disbursement',
-        merchantName: counterparty,
-        counterparty,
-        channel,
-        confidence: 'medium',
-        referenceId: refId,
-        needsReview: false,
-      };
-    }
-
     return {
       category: 'Income',
       subcategory: 'Other Inflow',
       merchantName: counterparty,
       counterparty,
       channel,
-      confidence: 'medium',
+      confidence: 'low',
       referenceId: refId,
       needsReview: true,
+      classificationReason: 'Credit transaction — no matching rule found. Classified as Other Inflow for review.',
     };
   } else {
     return {
@@ -497,11 +515,12 @@ export function categorizeTransaction(
       confidence: 'low',
       referenceId: refId,
       needsReview: true,
+      classificationReason: 'Debit transaction — no merchant or rule match found. Please review manually.',
     };
   }
 }
 
-// Legacy helper for backward compatibility
+// Legacy helpers for backward compatibility
 export function categorize(description: string, isCredit: boolean): string {
   const res = categorizeTransaction(description, isCredit);
   return `${res.category} – ${res.subcategory}`;
@@ -511,7 +530,8 @@ export function isIncomeCategory(categoryStr: string): boolean {
   return (
     categoryStr.startsWith('Income') ||
     categoryStr.includes('Loan Disbursement') ||
-    categoryStr.includes('Salary')
+    categoryStr.includes('Salary') ||
+    categoryStr.includes('Wallet Top-Up')
   );
 }
 
