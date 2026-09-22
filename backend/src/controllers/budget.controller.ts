@@ -16,18 +16,33 @@ export const getBudgets = async (req: AuthRequest, res: Response): Promise<void>
     const startDate = new Date(year, month - 1, 1);
     const endDate = new Date(year, month, 0, 23, 59, 59);
 
-    const spending = await prisma.transaction.groupBy({
-      by: ['category'],
+    const transactions = await prisma.transaction.findMany({
       where: {
         statement: { userId: req.user!.userId },
-        type: 'debit',
         date: { gte: startDate, lte: endDate },
+        isDuplicate: false,
       },
-      _sum: { amount: true },
+      select: { amount: true, category: true, type: true, transactionType: true },
     });
 
     const spendMap: Record<string, number> = {};
-    spending.forEach(s => { spendMap[s.category] = s._sum.amount || 0; });
+    transactions.forEach(t => {
+      const txType = t.transactionType || (t.type === 'credit' ? 'Income' : 'Expense');
+      if (txType === 'Transfer' || txType === 'P2P') return;
+      
+      if (txType === 'Refund') {
+        if (!spendMap[t.category]) spendMap[t.category] = 0;
+        spendMap[t.category] -= t.amount;
+      } else if (txType === 'Expense' || txType === 'EMI/Loan' || txType === 'Investment') {
+        if (!spendMap[t.category]) spendMap[t.category] = 0;
+        spendMap[t.category] += t.amount;
+      }
+    });
+
+    // Prevent negative spending from massive refunds
+    Object.keys(spendMap).forEach(k => {
+      if (spendMap[k] < 0) spendMap[k] = 0;
+    });
 
     const enriched = budgets.map(b => ({
       ...b,

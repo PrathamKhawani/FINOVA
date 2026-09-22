@@ -1,6 +1,7 @@
 # FINOVA — Modules Explanation
 
-## How Each Module Works
+> **Semester 7 Final Documentation**
+> Reflects actual codebase as of final submission. All modules have been integration-tested.
 
 ---
 
@@ -8,11 +9,18 @@
 
 **Files**: `backend/src/controllers/auth.controller.ts`, `backend/src/middleware/auth.middleware.ts`
 
-Users register with name, email, and password. Passwords are hashed using **bcryptjs** (salt rounds: 12). On login, the server issues two tokens:
-- **Access Token** (JWT, 15 minutes): used for every authenticated API call in the `Authorization: Bearer` header
-- **Refresh Token** (JWT, 7 days): stored in the database `RefreshToken` table; used to silently obtain new access tokens
+Users register with name, email, and password. Passwords are hashed using **bcryptjs** (cost factor: 12). On login, the server issues two tokens:
+- **Access Token** (JWT, 15 minutes): sent in the `Authorization: Bearer` header for every authenticated API call
+- **Refresh Token** (JWT, 7 days): stored in the database `RefreshToken` table; rotated on each use (old token deleted, new one issued)
 
-If the access token expires, the frontend automatically calls `/api/auth/refresh` and retries the original request. Logout deletes the refresh token from the database. All authenticated routes use the `authenticate` middleware that verifies the JWT signature and expiry.
+If the access token expires, `api.ts` automatically calls `/api/auth/refresh` and retries the original request seamlessly. Logout deletes the refresh token from the database, preventing reuse.
+
+Security properties verified:
+- Duplicate email registration returns 409
+- Passwords shorter than 8 characters are rejected with 400
+- Wrong password returns 401 with a generic "Invalid credentials" message (no user enumeration)
+- All protected routes return 401 for unauthenticated or token-expired requests
+- Revoked refresh tokens are rejected after logout
 
 ---
 
@@ -20,145 +28,200 @@ If the access token expires, the frontend automatically calls `/api/auth/refresh
 
 **Files**: `backend/src/services/pdf-parser.service.ts`, `backend/src/controllers/statements.controller.ts`
 
-Bank statements are uploaded as PDF files. The system uses **pdfjs-dist** to extract raw text from the PDF. The parser:
-1. Detects the bank (HDFC, ICICI, SBI, Axis, Kotak) from header text
-2. Applies bank-specific regex patterns to identify table rows
-3. Reconstructs multi-line narrations (bank PDFs often wrap long descriptions)
-4. Extracts: date, description/narration, debit amount, credit amount, and running balance
+Bank statements are uploaded as PDF files. The parser operates in three stages:
 
-The extracted text is passed to the categorization engine before being saved to the database.
+**Stage 1 — Coordinate-Based Extraction (pdfjs-dist)**
+Extracts every text item with its X/Y coordinates. Groups items by Y position (6px tolerance) to reconstruct visual rows. This is the most accurate extraction method.
+
+**Stage 2 — Plain Text Fallback (pdf-parse)**
+If Stage 1 returns fewer than 5 lines, falls back to a simpler line-by-line text extraction.
+
+**Stage 3 — OCR Fallback (Tesseract.js)**
+For scanned/image-based PDFs, runs Tesseract OCR. A `warnings[]` field in the API response notifies the user when OCR was used.
+
+**Column Detection**: Dynamically maps Debit, Credit, and Balance column X-positions from the header row, then assigns amounts column-aware to correct direction. Supports 9+ Indian bank formats.
+
+**Privacy**: Uploaded files are deleted from disk immediately in a `finally` block after extraction completes (or fails). Raw files are never permanently stored.
 
 ---
 
-### 3. Wallet Transaction Import
+### 3. Wallet Statement Import
 
 **Files**: `backend/src/services/wallet-parser.service.ts`, `backend/src/routes/wallet.routes.ts`
 
-Since FINOVA cannot directly access private wallet accounts without official API authorization, users export their transaction history from PhonePe/Paytm/Google Pay as a CSV or PDF file and upload it to FINOVA.
+PhonePe, Paytm, and Google Pay do not offer public consumer APIs. Users export their transaction history as CSV or PDF from the wallet app and upload to FINOVA.
 
-The wallet parser:
-- **CSV**: Detects which wallet the file is from based on column headers and filename. Supports: PhonePe CSV, Paytm CSV, Google Pay CSV, and generic CSV with Date/Description/Amount columns.
+- **CSV**: Auto-detects provider from column headers and filename. Parses PhonePe, Paytm, Google Pay, and generic CSV formats.
 - **PDF**: Extracts text and applies wallet-specific patterns.
 
-All wallet transactions are tagged with `source: 'WALLET'` and `provider: 'PhonePe'` (or appropriate provider) in the database, keeping them separate from bank transactions while allowing unified analysis.
+Wallet transactions are tagged `source: 'WALLET'` and `provider: 'PhonePe'` (or detected provider) in the database. All financial modules handle bank and wallet transactions from the same `Transaction` table while preserving their source labels.
 
 ---
 
-### 4. 7-Layer Categorization Engine
+### 4. Transaction Extraction & Raw Data Preservation
 
-**Files**: `backend/src/services/categorizer.service.ts`, `backend/src/services/merchant-kb.service.ts`
+**File**: `backend/src/controllers/statements.controller.ts`
 
-Every transaction narration passes through 7 priority layers:
+Each extracted row is stored with:
+- `rawNarration`: the original narration text as-is from the PDF/CSV
+- `description`: cleaned narration (dates and amounts stripped)
+- `amount`: normalized positive number
+- `type`: `'credit'` or `'debit'`
+- `date`: parsed to ISO DateTime
+- `balance`: running account balance (null if not in statement)
+- `referenceId`: UPI reference, cheque number, or transaction ID
+- `source`: `'BANK'` or `'WALLET'`
+- `provider`: bank name or wallet name
+- `isDuplicate`: flagged at import time if a likely duplicate exists
+
+---
+
+### 5. Entity / Merchant Identification
+
+**Files**: `backend/src/services/entity-resolver.service.ts`, `backend/src/services/merchant-kb.service.ts`
+
+The Entity Resolution pipeline processes raw narrations to identify who the money went to/came from:
+
+1. **Normalize**: lowercase, strip control characters, collapse whitespace
+2. **UPI VPA Extraction**: parse `UPI/recipient@bank` → extract recipient identifier
+3. **Knowledge Base Lookup**: 350+ Indian entities with aliases and VPA patterns
+4. **Direction Intelligence**: salary/refund/dividend → income; EMI/subscription → recurring expense
+5. **Person Detection**: 150+ Indian first names + surname patterns → Person-to-Person Transfer
+6. **Keyword Rules**: petrol pump, pharmacy, electricity, etc.
+7. **Fallback**: `needsReview: true`, category `Other / Needs Review`
+
+Results stored: `merchantName`, `counterparty`, `channel`, `entityType`, `businessType`, `legalName`, `parentCompany`, `extractedVPA`, `matchedAlias`, `classificationReason`.
+
+---
+
+### 6. 7-Layer Categorization Engine
+
+**Files**: `backend/src/services/categorizer.service.ts`, `backend/src/services/entity-resolver.service.ts`
+
+Every transaction is assigned a `category`, `subcategory`, `confidence`, and `classificationReason`. The 7 layers (in priority order):
 
 | Layer | Rule | Example |
 |---|---|---|
-| 1 | Income: credit + salary/refund/dividend keywords | "SALARY CREDIT JUL" → Income |
+| 1 | Income keywords (credit) | "SALARY CREDIT JUL" → Income |
 | 2 | Merchant KB exact/alias match | "SWIGGY ORDER" → Food & Dining |
 | 3 | Insurance/EMI/investment/rent patterns | "LIC PREMIUM" → Insurance & Premium |
-| 4 | Personal name detection (UPI P2P) | "UPI/Rahul Sharma" → Person-to-Person |
-| 5 | General keyword rules (fuel, pharmacy, etc.) | "PETROL PUMP" → Fuel |
-| 6 | Wallet/channel-specific rules | Wallet top-up → Wallet Transfer |
+| 4 | Person name heuristic (UPI P2P) | "UPI/Rahul Sharma" → Person-to-Person |
+| 5 | General keyword rules | "PETROL PUMP" → Fuel |
+| 6 | Wallet/channel-specific rules | Wallet top-up → Internal Transfer |
 | 7 | Fallback | Unknown → Other / Needs Review |
 
-Each result includes:
-- `category`, `subcategory`: what the transaction is
-- `confidence`: high / medium / low
-- `classificationReason`: plain-English explanation of WHY
-- `needsReview`: true when confidence is low
-
-**Known merchants always take priority** over generic keyword rules.
+Known merchant KB entries always override generic keyword rules.
 
 ---
 
-### 5. Merchant Knowledge Base
+### 7. Duplicate Detection
 
-**File**: `backend/src/services/merchant-kb.service.ts`
+**File**: `backend/src/controllers/statements.controller.ts` — `detectDuplicates()`
 
-A structured database of **200+ Indian merchants** organized by category and subcategory. Each entry has a primary name and optional aliases for handling abbreviations and alternate spellings.
+At upload time, each new transaction is compared against existing transactions for the same user from the past 90 days. A transaction is flagged `isDuplicate: true` if:
+1. Amounts match within ₹0.01
+2. Transaction direction (`type`) matches
+3. Dates are within ±2 days
+4. Either: reference IDs match exactly, OR first 15 characters of raw narration significantly overlap
 
-| Category | Example Merchants |
-|---|---|
-| Food & Dining / Delivery | Swiggy, Zomato, Dunzo |
-| Groceries / Quick Commerce | Blinkit, Zepto, Instamart |
-| Shopping / Online | Amazon, Flipkart, Myntra, Meesho |
-| Entertainment / Streaming | Netflix, Prime Video, Hotstar |
-| Transport / Cabs | Uber, Ola, Rapido |
-| Healthcare | Apollo Pharmacy, 1mg, Practo |
-| Investments | Zerodha, Groww, Upstox |
-
-Adding a new merchant requires only one line in the KB — no other code changes needed.
+Duplicate records are **preserved in the database** with `isDuplicate: true`. They appear in the Master Ledger with a "DUPE?" badge. All financial calculations (savings rate, budgets, category totals, reports) explicitly filter `isDuplicate: false`.
 
 ---
 
-### 6. Dashboard & Financial Intelligence
+### 8. Dashboard & Smart Insights
 
 **Files**: `backend/src/controllers/dashboard.controller.ts`, `backend/src/services/financial-intelligence.service.ts`
 
-The dashboard fetches all non-duplicate transactions for the user and runs the financial intelligence engine:
-- **Savings Rate**: `(income - expenses) / income × 100`
-- **Discretionary Spend Ratio**: food + shopping + entertainment as % of total expenses
-- **Debt-to-Income Ratio**: EMI payments as % of income
-- **Top Categories**: ranked by total spend
-- **Top Merchants**: ranked by total amount
-- **Smart Insights**: 4 data-backed observations (savings, high-spend category, investments, debt burden)
-- **Forecast**: recurring items (rent, EMIs, subscriptions) projected forward
-- **Bank vs Wallet Summary**: separate totals for bank account and wallet transactions
+The dashboard runs `analyzeFinancials()` on the user's complete non-duplicate transaction set:
 
-All values come from real database records — no static or mock data.
+**Summary Metrics:**
+- `totalIncome`: sum of all Income-type credits
+- `totalExpenses`: sum of all Expense/EMI/Investment debits (transfers excluded)
+- `netSavings`: `income - expenses`
+- `savingsRate`: `(netSavings / income) × 100`
+- `discretionarySpendRatio`: food + shopping + entertainment as % of expenses
+- `debtToIncomeRatio`: EMI payments as % of income
+
+**Insights Engine**: Generates 4–8 data-backed observations. Each insight includes `title`, `message`, and `explanation` (the specific numbers that triggered it).
+
+**Forecast**: Detects recurring items (same merchant, ≥2 months) and projects upcoming fixed commitments.
+
+All values come from real database rows — no static or mock data exists anywhere.
 
 ---
 
-### 7. Budget Management
+### 9. Budget Management
 
 **File**: `backend/src/controllers/budget.controller.ts`
 
-Users set a monthly spending limit per category (e.g. Food & Dining: ₹5,000 for August 2026). When fetching budgets, the backend queries actual transaction debits for that category within the month's date range and computes:
-- `spent`: actual amount debited in that category this month
-- `remaining`: `limitAmount - spent`
-- `usagePercent`: `(spent / limitAmount) × 100`
+Monthly category budgets. When fetching budgets for a month, the backend:
+1. Queries all non-duplicate, non-transfer debit transactions for that month and user
+2. Sums by category into `spendMap`
+3. Attaches `spent`, `remaining`, and `usagePercent` to each budget row
+
+Users can set limits per category per month. Deleting a budget does not delete any transactions.
 
 ---
 
-### 8. Savings Goals
+### 10. Savings Goals
 
 **File**: `backend/src/controllers/savings.controller.ts`
 
-Users create financial goals with a target amount, saved amount, optional deadline, and emoji. Progress is calculated client-side as `(savedAmount / targetAmount) × 100`. Users manually update `savedAmount` as they save money. Goals can be marked completed.
+Users create financial goals with:
+- `name`, `targetAmount`, `savedAmount`, `targetDate` (optional), `emoji`
+- `isCompleted` flag (can be toggled)
+
+Progress is `(savedAmount / targetAmount) × 100`. The API also returns `derivedData.actualNetSavings` — the user's net savings computed from real transactions — as context for goal planning. This prevents double-counting because savings are derived from the financial intelligence engine which excludes internal transfers.
 
 ---
 
-### 9. Loan & EMI Tracker
+### 11. Loan & EMI Tracking
 
 **File**: `backend/src/controllers/loans.controller.ts`
 
-Users manually add active loans with principal, outstanding amount, EMI, interest rate, tenure, and next due date. The tracker:
-- Shows payoff progress: `(principal - outstanding) / principal × 100`
-- Auto-detects EMI-category transactions from the user's bank statements (shown as "Detected EMIs" for reference)
-- Supports loan types: Home, Car, Personal, Education, Business, Gold
+Users manually add active loans:
+- Fields: `name`, `lenderName`, `principalAmount`, `outstandingAmount`, `emiAmount`, `interestRate`, `tenureMonths`, `startDate`, `nextDueDate`, `loanType`, `isActive`
+- Computed: `payoffPercent = (principal - outstanding) / principal × 100`
+- Supported loan types: Home, Car, Personal, Education, Business, Gold
+
+**EMI Auto-Detection**: The GET /loans endpoint scans the user's non-duplicate debit transactions categorized as `EMI/Loan` and attempts to match them to the user's loans by:
+1. Exact EMI amount match
+2. Lender name substring match in narration/counterparty
+
+Unmatched EMI transactions appear as "Detected EMIs" for informational reference. EMI transactions are not automatically assigned to loans without sufficient evidence.
 
 ---
 
-### 10. Financial Reports
+### 12. Financial Reports
 
-**File**: `frontend/src/app/reports/page.tsx`
+**Files**: `backend/src/controllers/reports.controller.ts`, `frontend/src/app/reports/page.tsx`
 
-Pulls data from the dashboard API and presents:
-- Bank vs Wallet transaction breakdown side-by-side
-- Financial health ratios with benchmarks (Savings Rate ≥20%, Discretionary ≤30%, Debt-to-Income ≤35%)
-- Top expense categories with horizontal bar visualization
-- Top merchants by spending amount
-- Browser print/export functionality
+Dedicated `/api/reports/summary` endpoint with three filter parameters:
+- `month`: `YYYY-MM` — restrict to a specific calendar month
+- `startDate` / `endDate`: `YYYY-MM-DD` — custom date range
+- `source`: `BANK` | `WALLET` | `ALL`
+
+**Report Sections:**
+- Summary: income, expenses, net, savings rate, discretionary ratio, debt ratio
+- Bank vs Wallet split: independent totals for each source
+- Category breakdown: chart-ready sorted array with amounts and percentages
+- Monthly trend: month-by-month income vs expenses
+- Recurring payment detection: merchants appearing in ≥2 distinct months
+- Top merchants by total spending
+- Available months selector for the filter UI
+
+All data derived exclusively from database transactions.
 
 ---
 
-### 11. Duplicate Detection
+### 13. Security & Privacy
 
-**File**: `backend/src/controllers/statements.controller.ts` (`detectDuplicates`)
+**Files**: `backend/src/middleware/auth.middleware.ts`, `backend/src/index.ts`
 
-When uploading a new statement (bank or wallet), each new transaction is compared against the user's existing transactions from the last 90 days. A transaction is flagged as a potential duplicate if:
-1. The amounts match exactly (within ₹0.01)
-2. The transaction type matches (both credit or both debit)
-3. The dates are within ±2 days of each other
-4. Either: the reference IDs match exactly, OR the narration first 30 characters significantly overlap
-
-Duplicates are stored with `isDuplicate: true` and excluded from financial calculations.
+- All protected endpoints require `Authorization: Bearer <token>` — missing or invalid tokens return 401
+- Every database query filters by `userId: req.user!.userId` — cross-user data access is architecturally impossible
+- Uploaded bank/wallet files are deleted immediately after parsing (in a `finally` block)
+- The `/uploads` directory is NOT publicly served (static file serving removed)
+- Prisma logs only `error` and `warn` levels — raw transaction queries are never printed to logs
+- `.gitignore` excludes `.env`, `*.db`, `uploads/`, logs, and all temporary files
+- Integration test confirmed: User A cannot read User B's budgets, statements, or transactions

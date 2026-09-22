@@ -197,5 +197,13 @@ export const api = {
     apiFetch(`/loans/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteLoan: (id: string) =>
     apiFetch(`/loans/${id}`, { method: 'DELETE' }),
+
+  // Reports
+  getReports: (params?: { month?: string; startDate?: string; endDate?: string; source?: string }) => {
+    const qs = params ? '?' + new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v)) as Record<string, string>
+    ).toString() : '';
+    return apiFetch(`/reports/summary${qs}`);
+  },
 };
 

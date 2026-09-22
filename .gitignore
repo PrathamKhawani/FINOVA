@@ -35,6 +35,8 @@ backend/debug-*.js
 backend/verify-*.js
 backend/inspect-*.js
 backend/create-*.js
+backend/integration-test.js
+backend/test-*.ts
 backend/sample_*.pdf
 backend/eng.traineddata
 

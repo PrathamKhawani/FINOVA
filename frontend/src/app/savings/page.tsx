@@ -8,6 +8,7 @@ const GOAL_EMOJIS = ['🎯','🏠','✈️','🚗','💍','📱','🎓','💰','
 
 export default function SavingsPage() {
   const [goals, setGoals] = useState<any[]>([]);
+  const [derivedData, setDerivedData] = useState<{actualNetSavings: number, actualInvestments: number} | null>(null);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [editGoal, setEditGoal] = useState<any>(null);
@@ -18,6 +19,7 @@ export default function SavingsPage() {
     try {
       const res = await api.getSavingsGoals();
       setGoals(res.data?.goals || []);
+      setDerivedData(res.data?.derivedData || null);
     } finally { setLoading(false); }
   };
 
@@ -96,6 +98,26 @@ export default function SavingsPage() {
             New Goal
           </button>
         </div>
+
+        {/* Derived Data Insights */}
+        {derivedData && (
+          <div className="mb-6 p-4 rounded-xl bg-blue-900/20 border border-blue-500/30 flex items-center justify-between">
+            <div>
+              <h3 className="text-blue-400 font-semibold text-sm">Data-Driven Insights</h3>
+              <p className="text-gray-400 text-xs mt-1">Derived from your uploaded statements (excluding transfers)</p>
+            </div>
+            <div className="flex gap-4 text-right">
+              <div>
+                <p className="text-xs text-gray-500">Actual Net Savings</p>
+                <p className="text-sm font-bold text-white">₹{derivedData.actualNetSavings.toLocaleString('en-IN')}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Actual Investments</p>
+                <p className="text-sm font-bold text-white">₹{derivedData.actualInvestments.toLocaleString('en-IN')}</p>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Summary */}
         {goals.length > 0 && (

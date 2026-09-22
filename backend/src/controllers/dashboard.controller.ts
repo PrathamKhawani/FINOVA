@@ -20,7 +20,7 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response): Prom
         merchantName: true, counterparty: true, channel: true,
         amount: true, type: true, category: true, subcategory: true,
         confidence: true, balance: true, source: true, provider: true,
-        isDuplicate: true, needsReview: true,
+        isDuplicate: true, needsReview: true, transactionType: true,
       },
     });
 
@@ -29,19 +29,19 @@ export const getDashboardSummary = async (req: AuthRequest, res: Response): Prom
       .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
       .slice(0, 10);
 
-    // Separate bank vs wallet
-    const bankTxns = transactions.filter(t => t.source === 'BANK' || !t.source);
-    const walletTxns = transactions.filter(t => t.source === 'WALLET');
+    // Separate bank vs wallet, excluding duplicates for math calculations
+    const cleanTxns = transactions.filter(t => !t.isDuplicate);
+    const bankTxns = cleanTxns.filter(t => t.source === 'BANK' || !t.source);
+    const walletTxns = cleanTxns.filter(t => t.source === 'WALLET');
 
     const bankCredits = bankTxns.filter(t => t.type === 'credit').reduce((s, t) => s + t.amount, 0);
     const bankDebits  = bankTxns.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0);
     const walletCredits = walletTxns.filter(t => t.type === 'credit').reduce((s, t) => s + t.amount, 0);
     const walletDebits  = walletTxns.filter(t => t.type === 'debit').reduce((s, t) => s + t.amount, 0);
     const duplicateCount   = transactions.filter(t => t.isDuplicate).length;
-    const needsReviewCount = transactions.filter(t => t.needsReview).length;
+    const needsReviewCount = cleanTxns.filter(t => t.needsReview).length;
 
     // Run financial intelligence on non-duplicate transactions
-    const cleanTxns = transactions.filter(t => !t.isDuplicate);
     const intelligence = analyzeFinancials(cleanTxns);
 
     // Build response — rename fields to match frontend expectations

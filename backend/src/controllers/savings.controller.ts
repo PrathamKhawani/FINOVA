@@ -2,6 +2,8 @@ import { Response } from 'express';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 
+import { analyzeFinancials } from '../services/financial-intelligence.service';
+
 // GET /api/savings/goals
 export const getSavingsGoals = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
@@ -9,7 +11,34 @@ export const getSavingsGoals = async (req: AuthRequest, res: Response): Promise<
       where: { userId: req.user!.userId },
       orderBy: { createdAt: 'desc' },
     });
-    res.json({ success: true, data: { goals } });
+
+    // Derive real savings progress from transaction history
+    const transactions = await prisma.transaction.findMany({
+      where: { statement: { userId: req.user!.userId }, isDuplicate: false },
+      select: {
+        id: true, date: true, description: true, amount: true, type: true,
+        category: true, source: true, transactionType: true,
+      },
+    });
+
+    const intelligence = analyzeFinancials(transactions as any);
+    const actualNetSavings = intelligence.summary.netSavings;
+    
+    // Calculate total actual investments/SIPs (these don't double count transfers because of analyzeFinancials logic)
+    const actualInvestments = intelligence.topCategories
+      .filter(c => c.category.includes('Investment') || c.category.includes('SIP'))
+      .reduce((sum, c) => sum + c.amount, 0);
+
+    res.json({ 
+      success: true, 
+      data: { 
+        goals, 
+        derivedData: { 
+          actualNetSavings: Math.max(0, actualNetSavings), 
+          actualInvestments 
+        } 
+      } 
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to fetch savings goals' });
   }

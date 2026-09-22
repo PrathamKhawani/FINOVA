@@ -20,13 +20,22 @@ interface Transaction {
   confidence?: 'high' | 'medium' | 'low';
   referenceId?: string;
   balance?: number;
-  source?: string;          // 'BANK' | 'WALLET'
-  provider?: string;        // 'HDFC' | 'PhonePe' | 'Paytm' etc.
+  source?: string;
+  provider?: string;
   isDuplicate?: boolean;
   needsReview?: boolean;
   classificationReason?: string;
   statement?: { bankName?: string; originalName?: string };
+  // Entity Intelligence Fields
+  entityType?: string;
+  businessType?: string;
+  transactionType?: string;
+  legalName?: string;
+  parentCompany?: string;
+  extractedVPA?: string;
+  matchedAlias?: string;
 }
+
 
 const CATEGORY_COLORS: Record<string, string> = {
   Income: '#10b981',
@@ -50,6 +59,35 @@ const CATEGORY_COLORS: Record<string, string> = {
   Taxes: '#dc2626',
   'Other / Needs Review': '#94a3b8',
 };
+
+const EntityTypeBadge = ({ entityType }: { entityType?: string }) => {
+  if (!entityType) return <span className="font-semibold text-slate-400 text-xs">Unknown</span>;
+  let color = 'bg-slate-500/10 text-slate-400 border-slate-500/20';
+  if (entityType.includes('Merchant') || entityType.includes('Platform')) color = 'bg-blue-500/10 text-blue-400 border-blue-500/20';
+  if (entityType.includes('Person')) color = 'bg-purple-500/10 text-purple-400 border-purple-500/20';
+  if (entityType.includes('Financial') || entityType.includes('Bank') || entityType.includes('Investment')) color = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+  if (entityType.includes('Government')) color = 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+  if (entityType.includes('Utility')) color = 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20';
+  if (entityType.includes('Review')) color = 'bg-orange-500/10 text-orange-400 border-orange-500/20';
+  
+  return (
+    <span className={`px-2 py-0.5 rounded text-[10px] font-semibold border ${color} inline-flex w-fit`}>
+      {entityType}
+    </span>
+  );
+};
+
+const TransactionTypeBadge = ({ txType }: { txType?: string }) => {
+  if (!txType) return <span className="font-semibold text-slate-400 text-xs">Unknown</span>;
+  let color = 'text-slate-400';
+  if (txType === 'Income' || txType === 'Refund') color = 'text-emerald-400';
+  if (txType === 'Expense' || txType === 'EMI/Loan') color = 'text-rose-400';
+  if (txType === 'Transfer' || txType === 'P2P') color = 'text-blue-400';
+  if (txType === 'Investment') color = 'text-purple-400';
+  
+  return <span className={`font-semibold text-xs ${color}`}>{txType}</span>;
+};
+
 
 export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
@@ -320,61 +358,94 @@ export default function TransactionsPage() {
                           </td>
                         </tr>
 
-                        {/* ── EXPANDABLE TRANSACTION DETAIL VIEW ──────────────── */}
                         {isExpanded && (
                           <tr className="bg-slate-950/80 border-b border-slate-800">
                             <td colSpan={8} className="p-5">
                               <div className="flex flex-col gap-4 text-xs">
+                                {/* Header */}
                                 <div className="flex items-center justify-between border-b border-slate-800 pb-3">
                                   <div className="flex items-center gap-2 text-blue-400 font-bold">
                                     <Info size={16} />
-                                    <span>Parser & Categorization Audit Trace</span>
+                                    <span>Entity Intelligence — Categorization Audit</span>
                                   </div>
                                   <span className="text-slate-400 text-[11px]">
-                                    Transaction ID: <code className="text-slate-200 font-mono">{tx.id}</code>
+                                    ID: <code className="text-slate-200 font-mono">{tx.id}</code>
                                   </span>
                                 </div>
 
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                  {/* Raw Narration */}
+                                {/* Row 1: Entity Identity */}
+                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                  <div className="bg-slate-900/90 p-3 rounded-xl border border-slate-800">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Identified Entity</span>
+                                    <span className="font-semibold text-white text-sm">{entity}</span>
+                                    {tx.legalName && (
+                                      <span className="text-[10px] text-slate-400 block mt-0.5 truncate" title={tx.legalName}>{tx.legalName}</span>
+                                    )}
+                                    {tx.parentCompany && (
+                                      <span className="text-[10px] text-slate-500 block truncate">↳ {tx.parentCompany}</span>
+                                    )}
+                                  </div>
+
+                                  <div className="bg-slate-900/90 p-3 rounded-xl border border-slate-800">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Entity Type</span>
+                                    <EntityTypeBadge entityType={tx.entityType} />
+                                  </div>
+
+                                  <div className="bg-slate-900/90 p-3 rounded-xl border border-slate-800">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Business Type</span>
+                                    <span className="font-semibold text-cyan-300 text-xs">{tx.businessType || 'Unknown'}</span>
+                                  </div>
+
+                                  <div className="bg-slate-900/90 p-3 rounded-xl border border-slate-800">
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Transaction Type</span>
+                                    <TransactionTypeBadge txType={tx.transactionType} />
+                                  </div>
+                                </div>
+
+                                {/* Row 2: Technical Details */}
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                                   <div className="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800">
                                     <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1.5">
                                       Original Raw Statement Narration
                                     </span>
-                                    <p className="font-mono text-slate-200 text-xs bg-slate-950/80 p-2.5 rounded border border-slate-800/80 break-words leading-relaxed">
+                                    <p className="font-mono text-slate-200 text-[11px] bg-slate-950/80 p-2.5 rounded border border-slate-800/80 break-words leading-relaxed">
                                       {tx.rawNarration || tx.description}
                                     </p>
                                   </div>
 
-                                  {/* Classification Analysis */}
                                   <div className="bg-slate-900/90 p-3.5 rounded-xl border border-slate-800 flex flex-col gap-2">
-                                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">
-                                      Categorization Analysis
-                                    </span>
-
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block">Extraction Details</span>
                                     <div className="grid grid-cols-2 gap-3 mt-1">
                                       <div>
-                                        <span className="text-[11px] text-slate-400 block">Extracted Entity:</span>
-                                        <span className="font-semibold text-white">{entity}</span>
+                                        <span className="text-[10px] text-slate-500 block">Payment Channel</span>
+                                        <span className="font-semibold text-blue-400 text-xs">{tx.channel || 'Bank Transfer'}</span>
                                       </div>
                                       <div>
-                                        <span className="text-[11px] text-slate-400 block">Payment Channel:</span>
-                                        <span className="font-semibold text-blue-400">{tx.channel || 'Bank Direct'}</span>
-                                      </div>
-                                      <div>
-                                        <span className="text-[11px] text-slate-400 block">Source:</span>
-                                        <span className={`font-semibold ${tx.source === 'WALLET' ? 'text-purple-400' : 'text-blue-400'}`}>
+                                        <span className="text-[10px] text-slate-500 block">Source</span>
+                                        <span className={`font-semibold text-xs ${tx.source === 'WALLET' ? 'text-purple-400' : 'text-blue-400'}`}>
                                           {tx.source === 'WALLET' ? `📱 ${tx.provider || 'Wallet'}` : `🏦 ${tx.provider || 'Bank'}`}
                                         </span>
                                       </div>
                                       <div>
-                                        <span className="text-[11px] text-slate-400 block">Confidence Score:</span>
-                                        <span className="font-semibold text-purple-400 uppercase">{tx.confidence || 'medium'}</span>
+                                        <span className="text-[10px] text-slate-500 block">Confidence</span>
+                                        <span className="font-semibold text-purple-400 uppercase text-xs">{tx.confidence || 'medium'}</span>
                                       </div>
+                                      {tx.extractedVPA && (
+                                        <div>
+                                          <span className="text-[10px] text-slate-500 block">Matched VPA</span>
+                                          <span className="font-mono text-[10px] text-emerald-300 break-all">{tx.extractedVPA}</span>
+                                        </div>
+                                      )}
+                                      {tx.matchedAlias && (
+                                        <div>
+                                          <span className="text-[10px] text-slate-500 block">Matched Alias</span>
+                                          <span className="font-mono text-[10px] text-yellow-300">"{tx.matchedAlias}"</span>
+                                        </div>
+                                      )}
                                       {tx.referenceId && (
                                         <div className="col-span-2">
-                                          <span className="text-[11px] text-slate-400 block">Reference / UTR ID:</span>
-                                          <span className="font-mono text-xs text-slate-200">{tx.referenceId}</span>
+                                          <span className="text-[10px] text-slate-500 block">Reference / UTR ID</span>
+                                          <span className="font-mono text-[11px] text-slate-200">{tx.referenceId}</span>
                                         </div>
                                       )}
                                     </div>
@@ -384,24 +455,24 @@ export default function TransactionsPage() {
                                 {/* WHY Explanation */}
                                 {tx.classificationReason && (
                                   <div className="bg-blue-500/5 border border-blue-500/20 rounded-xl p-3.5">
-                                    <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400 block mb-1.5">💡 Why This Category?</span>
+                                    <span className="text-[10px] font-bold uppercase tracking-wider text-blue-400 block mb-1.5">💡 Why This Classification?</span>
                                     <p className="text-slate-300 text-xs leading-relaxed">{tx.classificationReason}</p>
                                   </div>
                                 )}
 
-                                {/* Duplicate / Review Flags */}
+                                {/* Flags */}
                                 {(tx.isDuplicate || tx.needsReview) && (
                                   <div className="flex gap-3">
                                     {tx.isDuplicate && (
                                       <div className="flex-1 bg-yellow-500/5 border border-yellow-500/20 rounded-xl p-3">
                                         <span className="text-[10px] font-bold uppercase text-yellow-400">⚠ Possible Duplicate</span>
-                                        <p className="text-yellow-300/70 text-xs mt-1">This transaction has similar date, amount and narration to an existing record. Please verify before reporting.</p>
+                                        <p className="text-yellow-300/70 text-xs mt-1">Similar date, amount and narration to an existing record. Verify before reporting.</p>
                                       </div>
                                     )}
                                     {tx.needsReview && (
                                       <div className="flex-1 bg-orange-500/5 border border-orange-500/20 rounded-xl p-3">
                                         <span className="text-[10px] font-bold uppercase text-orange-400">🔍 Needs Review</span>
-                                        <p className="text-orange-300/70 text-xs mt-1">No matching merchant or rule found. Category is a best-guess. You may relabel manually.</p>
+                                        <p className="text-orange-300/70 text-xs mt-1">Entity not found in knowledge base. Category is low-confidence. Manual review recommended.</p>
                                       </div>
                                     )}
                                   </div>

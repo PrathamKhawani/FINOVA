@@ -1,166 +1,195 @@
 # FINOVA — Demo Guide
 
-## How to Run and Demo the Application
+> **Semester 7 Final Submission**
+> Step-by-step guide for demonstrating every module. All financial figures shown will come from actual uploaded data.
 
 ---
 
 ## Prerequisites
 
-- Node.js 18+ installed
-- Git
-
----
-
-## Setup (First Time)
-
+Ensure both servers are running:
 ```bash
-# 1. Clone the repository
-git clone https://github.com/PrathamKhawani/FINOVA.git
-cd FINOVA
+# Terminal 1 — Backend
+cd backend && npm run dev
 
-# 2. Install backend dependencies
-cd backend
-npm install
-
-# 3. Set up environment variables
-# Create backend/.env with:
-DATABASE_URL="file:./prisma/dev.db"
-JWT_SECRET="your-jwt-secret-here"
-JWT_REFRESH_SECRET="your-refresh-secret-here"
-PORT=5000
-
-# 4. Initialize the database
-npx prisma db push
-
-# 5. Install frontend dependencies
-cd ../frontend
-npm install
-
-# 6. Set up frontend environment
-# Create frontend/.env.local with:
-NEXT_PUBLIC_API_URL=http://localhost:5000
+# Terminal 2 — Frontend
+cd frontend && npm run dev
 ```
+
+Open: **http://localhost:3000**
 
 ---
 
-## Running Locally
+## Demo Workflow
 
-Open **two terminal windows**:
+### Step 1: Register
 
-**Terminal 1 — Backend**:
-```bash
-cd FINOVA/backend
-npm run dev
-# → 🚀 FINOVA API running on http://localhost:5000
-```
-
-**Terminal 2 — Frontend**:
-```bash
-cd FINOVA/frontend
-npm run dev
-# → ▲ Next.js ready on http://localhost:3000
-```
-
-Open `http://localhost:3000` in your browser.
+1. Navigate to **http://localhost:3000/register**
+2. Enter:
+   - Name: `Demo User`
+   - Email: `demo@finova.test`
+   - Password: `Demo@12345`
+3. Click **Create Account**
+4. Verify: Redirected to dashboard showing zero values (confirming no mock data)
 
 ---
 
-## Demo Flow (Step by Step)
+### Step 2: Upload Bank Statement (PDF)
 
-### 1. Register
-- Go to `http://localhost:3000`
-- Click **Get Started** or **Register**
-- Fill in: Name, Email, Password → Register
-
-### 2. Login
-- Email: `your-registered-email`
-- Password: `your-password`
-- You will land on the **Dashboard**
-
-### 3. Upload a Bank Statement
-- Click **Upload Bank Statement** (top right of Dashboard, or Navbar → Upload)
-- Drag and drop a bank statement PDF (HDFC, ICICI, SBI, Axis, or Kotak)
-- Click **Process Statement**
-- Success message: "Extracted N transactions from [Bank Name] statement"
-
-### 4. View Transactions
-- Navbar → **Transactions**
-- See the full Master Ledger with all extracted transactions
-- Use filters: Search, Category, Type, Confidence
-- **Click any row** to expand it and see:
-  - Original raw narration (exactly as in the PDF)
-  - Extracted entity / merchant
-  - Payment channel (UPI, NEFT, Card, ATM)
-  - Source (🏦 Bank or 📱 Wallet)
-  - WHY this category was assigned (classificationReason)
-  - DUPE? badge (if potential duplicate)
-  - REVIEW badge (if low confidence)
-
-### 5. Import Wallet Transactions
-- Navbar → **Wallet Import**
-- Read the instructions for exporting from PhonePe / Paytm / Google Pay
-- Upload the exported CSV file
-- Wallet transactions appear in the ledger with 📱 badge
-
-### 6. Dashboard
-- Navbar → **Dashboard**
-- View:
-  - Total Income, Expenses, Net Savings, Savings Rate
-  - Bank Summary vs Wallet Summary cards
-  - Smart Insights (savings rate, top category, investments, debt)
-  - Category Spending Chart (bar)
-  - Recurring Payments detected
-  - Forecast
-
-### 7. Budget Manager
-- Navbar → **More** → **Budget**
-- Click **+ Add Budget**
-- Select category (e.g. Food & Dining), enter limit (e.g. ₹5000), month
-- See actual spending vs limit with color-coded progress bar
-
-### 8. Savings Goals
-- Navbar → **More** → **Savings Goals**
-- Click **+ New Goal**
-- Enter: Name, Target Amount, Saved Amount, Deadline, Emoji
-- See progress percentage and remaining amount
-
-### 9. Loans & EMI
-- Navbar → **More** → **Loans & EMI**
-- Click **+ Add Loan**
-- Enter: Loan name, Principal, Outstanding, EMI, Interest Rate, Type
-- See payoff progress bar
-- Scroll down → "Detected EMI Transactions" shows EMIs found in your bank statement
-
-### 10. Financial Reports
-- Navbar → **More** → **Reports**
-- See:
-  - Category spending breakdown (horizontal bars)
-  - Financial Health Ratios (Savings Rate, Discretionary Spend, Debt-to-Income)
-  - Bank vs Wallet comparison
-  - Top merchants by spend
+1. Click **Upload Statement** in the navbar or sidebar
+2. Navigate to **http://localhost:3000/upload**
+3. Select **Bank Statement (PDF)**
+4. Upload any HDFC/ICICI/SBI/Axis/Kotak Bank statement PDF
+5. Click **Upload & Process**
+6. Verify response shows:
+   - Bank name detected (e.g., "HDFC Bank")
+   - Statement period detected
+   - Number of transactions extracted
+   - Any duplicate warnings (if re-uploading)
 
 ---
 
-## Test Data — Sample Wallet CSV
+### Step 3: View Extracted Transactions
 
-To test wallet import, create a file named `phonepe_transactions.csv` with:
-
-```csv
-Date,Description,Type,Amount,Balance
-01/08/2026,Swiggy Order,Debit,350.00,12650.00
-02/08/2026,Money Received from Rahul,Credit,500.00,13150.00
-03/08/2026,Zomato Food Order,Debit,280.00,12870.00
-04/08/2026,Recharge - Jio Prepaid,Debit,239.00,12631.00
-05/08/2026,Amazon Shopping,Debit,1299.00,11332.00
-```
-
-Upload this on the Wallet Import page to see it parsed and categorized.
+1. Navigate to **Transactions** (sidebar)
+2. Verify:
+   - All transactions are listed with date, description, amount, category
+   - Categories are auto-assigned (Food & Dining, Income, Shopping, etc.)
+   - Each row shows source badge (BANK) and provider (HDFC Bank)
+   - Any `DUPE?` badges visible if applicable
+3. Use the search bar to search "UPI" or "NEFT"
+4. Use category filter dropdown to filter by "Food & Dining"
 
 ---
 
-## Important Notes for the Guide Demo
+### Step 4: Upload Wallet Statement (Optional — requires PhonePe/Paytm export)
 
-1. **Wallet Import** — We import exported files, not live account data. This is by design.
-2. **Categorization** — Known merchants get exact KB matches. Unknown/ambiguous transactions get "Needs Review" — the system never fabricates categories.
-3. **Duplicate Detection** — If you upload a bank PDF and then a PhonePe CSV for the same period, overlapping transactions will be flagged as potential duplicates with a "DUPE?" badge.
-4. **Privacy** — No uploaded PDFs or SQLite database files are committed to Git.
+1. Navigate to **http://localhost:3000/wallet**
+2. Select **Wallet type** (PhonePe / Paytm / Google Pay / Generic)
+3. Upload exported CSV file
+4. Verify: Transactions appear tagged as WALLET source
+5. Navigate to Transactions — verify duplicates are flagged if overlapping with bank data
+
+---
+
+### Step 5: Dashboard
+
+1. Navigate to **Dashboard**
+2. Verify all widgets show real data (not zeroes):
+   - Total Income / Total Expenses / Net Savings
+   - Savings Rate (percentage)
+   - Top Spending Categories chart
+   - Recent Transactions list
+   - Smart Insights cards (should show 3–8 insights)
+   - Financial Forecast (upcoming recurring payments)
+3. Verify Bank vs Wallet split shows correct totals
+
+---
+
+### Step 6: Budget Management
+
+1. Navigate to **Budget**
+2. Click **+ Add Budget**
+3. Create:
+   - Category: `Food & Dining`
+   - Monthly Limit: `₹5,000`
+4. Click **Save**
+5. Verify the budget card immediately shows:
+   - Actual `spent` amount from uploaded transactions
+   - `remaining` amount
+   - Progress bar reflecting real spending
+6. Create another budget (e.g., `Shopping: ₹3,000`)
+7. Delete one budget — verify it disappears
+
+---
+
+### Step 7: Savings Goals
+
+1. Navigate to **Savings Goals**
+2. Click **+ New Goal**
+3. Create:
+   - Name: `Emergency Fund`
+   - Target: `₹100,000`
+   - Currently Saved: `₹25,000`
+   - Target Date: 6 months from today
+   - Emoji: 🏦
+4. Verify:
+   - Progress bar shows 25%
+   - Deadline status shown
+   - "Actual Net Savings" displayed (from real transactions, not static)
+5. Edit the goal — update saved amount to `₹30,000` → verify progress updates to 30%
+
+---
+
+### Step 8: Loan & EMI Tracking
+
+1. Navigate to **Loans**
+2. Click **+ Add Loan**
+3. Enter:
+   - Name: `Home Loan`
+   - Lender: `HDFC Bank`
+   - Principal: `₹50,00,000`
+   - Outstanding: `₹45,00,000`
+   - Monthly EMI: `₹45,000`
+   - Interest Rate: `8.5%`
+   - Loan Type: `Home`
+4. Verify:
+   - Payoff progress shows 10%
+   - If EMI transactions exist in uploaded statements, they appear under "Matched EMIs"
+   - Unmatched EMI-category transactions appear under "Detected EMIs" for reference
+
+---
+
+### Step 9: Financial Reports
+
+1. Navigate to **Reports**
+2. With no filters (All time, All sources):
+   - Verify Income vs Expenses summary
+   - View Category Breakdown chart
+   - View Monthly Trend chart
+   - View Recurring Payments list (if ≥2 months of data)
+3. Apply month filter: Select a specific month
+   - Verify all numbers update to reflect only that month's transactions
+4. Apply source filter: Select "BANK only"
+   - Verify wallet transactions are excluded from totals
+
+---
+
+### Step 10: Smart Insights
+
+1. Return to **Dashboard**
+2. Scroll to the **Smart Insights** section
+3. Each insight card shows:
+   - Type indicator (success/warning/info/alert)
+   - Title and message
+   - "Why this insight" — the actual numbers that triggered it
+4. Verify insights reference real figures from uploaded transactions
+
+---
+
+### Step 11: Logout
+
+1. Click user avatar or "Logout" in the sidebar
+2. Verify: Redirected to login page
+3. Try accessing http://localhost:3000/dashboard directly
+4. Verify: Redirected to login (protected route working)
+5. Log back in — verify session is restored correctly
+
+---
+
+## What the Examiner Will See
+
+All financial figures shown during the demo derive from actual uploaded bank/wallet statements stored in the SQLite database. There are no hardcoded numbers, no `Math.random()` values, and no static demo data anywhere in the production code.
+
+---
+
+## Key Technical Points to Highlight
+
+| Feature | Technical Detail |
+|---|---|
+| PDF parsing | Coordinate-based column detection, not regex-only |
+| Categorization | 7-layer pipeline, 350+ merchant KB, explainable |
+| Duplicate detection | Cross-source fuzzy match, preserved not deleted |
+| Security | JWT rotation, bcrypt cost 12, PDFs auto-deleted |
+| User isolation | DB queries always filter by `userId` |
+| Integration tests | 55 automated API tests, 100% pass rate |

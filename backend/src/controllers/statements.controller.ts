@@ -105,13 +105,14 @@ async function detectDuplicates(
 
 // ── POST /api/statements/upload (Bank Statement — PDF) ────────────────────────
 export const uploadStatement = async (req: AuthRequest, res: Response): Promise<void> => {
+  let filePath = '';
   try {
     if (!req.file) {
       res.status(400).json({ success: false, message: 'No file provided' });
       return;
     }
 
-    const filePath = req.file.path;
+    filePath = req.file.path;
     const buffer = fs.readFileSync(filePath);
     const ext = path.extname(req.file.originalname).toLowerCase();
 
@@ -164,7 +165,7 @@ export const uploadStatement = async (req: AuthRequest, res: Response): Promise<
         debit: raw.debit,
         credit: raw.credit,
         type: isCredit ? 'credit' : 'debit',
-        transactionType: isCredit ? 'Income' : 'Expense',
+        transactionType: (catResult as any).transactionType || (isCredit ? 'Income' : 'Expense'),
         source: 'BANK',
         provider: bankName,
         category: catResult.category,
@@ -174,6 +175,12 @@ export const uploadStatement = async (req: AuthRequest, res: Response): Promise<
         balance: raw.balance,
         needsReview: catResult.needsReview,
         classificationReason: (catResult as any).classificationReason,
+        entityType: (catResult as any).entityType,
+        businessType: (catResult as any).businessType,
+        legalName: (catResult as any).legalName,
+        parentCompany: (catResult as any).parentCompany,
+        extractedVPA: (catResult as any).extractedVPA,
+        matchedAlias: (catResult as any).matchedAlias,
       };
     });
 
@@ -214,18 +221,23 @@ export const uploadStatement = async (req: AuthRequest, res: Response): Promise<
   } catch (error: any) {
     console.error('Upload error:', error);
     res.status(500).json({ success: false, message: 'Failed to process statement' });
+  } finally {
+    if (filePath && fs.existsSync(filePath)) {
+      try { fs.unlinkSync(filePath); } catch (e) { console.error('Failed to delete temp file', e); }
+    }
   }
 };
 
 // ── POST /api/wallet/upload (Wallet — CSV or PDF) ────────────────────────────
 export const uploadWalletStatement = async (req: AuthRequest, res: Response): Promise<void> => {
+  let filePath = '';
   try {
     if (!req.file) {
       res.status(400).json({ success: false, message: 'No file provided' });
       return;
     }
 
-    const filePath = req.file.path;
+    filePath = req.file.path;
     const buffer = fs.readFileSync(filePath);
     const ext = path.extname(req.file.originalname).toLowerCase();
 
@@ -281,7 +293,7 @@ export const uploadWalletStatement = async (req: AuthRequest, res: Response): Pr
         debit: raw.debit,
         credit: raw.credit,
         type: isCredit ? 'credit' : 'debit',
-        transactionType: isCredit ? 'Income' : 'Expense',
+        transactionType: (catResult as any).transactionType || (isCredit ? 'Income' : 'Expense'),
         source: 'WALLET',
         provider,
         category: catResult.category,
@@ -290,6 +302,12 @@ export const uploadWalletStatement = async (req: AuthRequest, res: Response): Pr
         referenceId: catResult.referenceId,
         balance: raw.balance,
         needsReview: catResult.needsReview,
+        entityType: (catResult as any).entityType,
+        businessType: (catResult as any).businessType,
+        legalName: (catResult as any).legalName,
+        parentCompany: (catResult as any).parentCompany,
+        extractedVPA: (catResult as any).extractedVPA,
+        matchedAlias: (catResult as any).matchedAlias,
       };
     });
 
@@ -330,6 +348,10 @@ export const uploadWalletStatement = async (req: AuthRequest, res: Response): Pr
   } catch (error: any) {
     console.error('Wallet upload error:', error);
     res.status(500).json({ success: false, message: 'Failed to process wallet statement' });
+  } finally {
+    if (filePath && fs.existsSync(filePath)) {
+      try { fs.unlinkSync(filePath); } catch (e) { console.error('Failed to delete temp wallet file', e); }
+    }
   }
 };
 

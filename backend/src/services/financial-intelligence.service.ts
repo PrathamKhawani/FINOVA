@@ -22,6 +22,8 @@ export interface TransactionInput {
   subcategory?: string | null;
   confidence?: string | null;
   balance?: number | null;
+  transactionType?: string | null;
+  source?: string | null;
 }
 
 export interface RecurringItem {
@@ -79,29 +81,48 @@ export function analyzeFinancials(transactions: TransactionInput[]): FinancialIn
   let totalEmi = 0;
   let totalInvestments = 0;
   let totalDiscretionary = 0;
+  let bankTxnCount = 0;
+  let walletTxnCount = 0;
+
+  let largestTransaction: TransactionInput | null = null;
 
   const categoryMap: Record<string, number> = {};
   const incomeCatMap: Record<string, number> = {};
   const merchantMap: Record<string, { amount: number; count: number }> = {};
-
   const recurringItems: RecurringItem[] = [];
 
   // Group transactions for processing
   sorted.forEach(t => {
     const amt = Math.round(t.amount * 100) / 100;
     const cat = t.category;
-    const isCredit = t.type === 'credit';
-    const isIncome = isCredit && (cat.startsWith('Income') || cat.includes('Salary') || cat.includes('Business'));
-    const isExpense = !isCredit && !cat.includes('Own Account Transfer') && !cat.includes('Self Transfer');
+    const txType = t.transactionType || (t.type === 'credit' ? 'Income' : 'Expense'); // fallback
 
-    if (isIncome) {
+    // Safely exclude internal transfers & P2P entirely from maths
+    if (txType === 'Transfer' || txType === 'P2P') {
+      return; 
+    }
+
+    if (t.source === 'WALLET') walletTxnCount++;
+    else bankTxnCount++;
+
+    if (txType === 'Refund') {
+      // Refunds are effectively negative expenses
+      totalExpenses -= amt;
+      return;
+    }
+
+    if (txType === 'Income') {
       totalIncome += amt;
       incomeCatMap[cat] = (incomeCatMap[cat] || 0) + amt;
     }
 
-    if (isExpense) {
+    if (txType === 'Expense' || txType === 'EMI/Loan' || txType === 'Investment') {
       totalExpenses += amt;
       categoryMap[cat] = (categoryMap[cat] || 0) + amt;
+
+      if (!largestTransaction || amt > largestTransaction.amount) {
+        largestTransaction = t;
+      }
 
       const merchant = t.merchantName || t.description.slice(0, 30);
       if (!merchantMap[merchant]) merchantMap[merchant] = { amount: 0, count: 0 };
@@ -112,10 +133,10 @@ export function analyzeFinancials(transactions: TransactionInput[]): FinancialIn
       if (cat.includes('Food') || cat.includes('Shopping') || cat.includes('Entertainment')) {
         totalDiscretionary += amt;
       }
-      if (cat.includes('EMI') || cat.includes('Loan')) {
+      if (txType === 'EMI/Loan' || cat.includes('EMI') || cat.includes('Loan')) {
         totalEmi += amt;
       }
-      if (cat.includes('Investment') || cat.includes('SIP')) {
+      if (txType === 'Investment' || cat.includes('Investment') || cat.includes('SIP')) {
         totalInvestments += amt;
       }
 
@@ -150,6 +171,9 @@ export function analyzeFinancials(transactions: TransactionInput[]): FinancialIn
     }
   });
 
+  // Prevent negative totals from massive refunds
+  if (totalExpenses < 0) totalExpenses = 0;
+
   totalIncome = Math.round(totalIncome * 100) / 100;
   totalExpenses = Math.round(totalExpenses * 100) / 100;
   const netSavings = Math.round((totalIncome - totalExpenses) * 100) / 100;
@@ -174,14 +198,15 @@ export function analyzeFinancials(transactions: TransactionInput[]): FinancialIn
     }))
     .sort((a, b) => b.amount - a.amount);
 
-  const topMerchants = Object.entries(merchantMap)
+  const allMerchants = Object.entries(merchantMap)
     .map(([name, data]) => ({
       name,
       amount: Math.round(data.amount * 100) / 100,
       count: data.count,
-    }))
-    .sort((a, b) => b.amount - a.amount)
-    .slice(0, 5);
+    }));
+
+  const topMerchants = [...allMerchants].sort((a, b) => b.amount - a.amount).slice(0, 5);
+  const mostFrequentMerchant = [...allMerchants].sort((a, b) => b.count - a.count)[0];
 
   // ── Smart Insights Generation with "WHY" Data-Driven Explanations ──────────────
   const insights: SmartInsight[] = [];
@@ -263,6 +288,52 @@ export function analyzeFinancials(transactions: TransactionInput[]): FinancialIn
         metric: `${debtToIncomeRatio}%`,
       });
     }
+
+    // 5. Largest Single Transaction
+    const lt = largestTransaction as TransactionInput | null;
+    if (lt) {
+      insights.push({
+        type: 'info',
+        title: 'Largest Single Expense',
+        message: `Your largest expense was ₹${lt.amount.toLocaleString('en-IN')} at ${lt.merchantName || 'Unknown Merchant'}.`,
+        explanation: `Generated from the single largest debit recorded on ${new Date(lt.date).toLocaleDateString('en-IN')}, categorized under ${lt.category}.`,
+        metric: `₹${lt.amount.toLocaleString('en-IN')}`,
+      });
+    }
+
+    // 6. Excessive Discretionary Spending
+    if (discretionarySpendRatio > 40) {
+      insights.push({
+        type: 'warning',
+        title: 'High Discretionary Spending',
+        message: `Non-essential spending accounts for ${discretionarySpendRatio}% of expenses.`,
+        explanation: `Generated because spending on Food, Shopping, and Entertainment combined (₹${totalDiscretionary.toLocaleString('en-IN')}) is taking up over 40% of total expenses.`,
+        metric: `${discretionarySpendRatio}%`,
+      });
+    }
+
+    // 7. Frequent Merchant
+    if (mostFrequentMerchant && mostFrequentMerchant.count >= 5) {
+      insights.push({
+        type: 'info',
+        title: 'Most Frequented Merchant',
+        message: `You transacted at ${mostFrequentMerchant.name} ${mostFrequentMerchant.count} times.`,
+        explanation: `Generated because you had ${mostFrequentMerchant.count} separate transactions with ${mostFrequentMerchant.name}, totaling ₹${mostFrequentMerchant.amount.toLocaleString('en-IN')}.`,
+        metric: `${mostFrequentMerchant.count} txns`,
+      });
+    }
+
+    // 8. Bank vs Wallet Usage
+    if (walletTxnCount > 0 && bankTxnCount > 0) {
+      const walletRatio = Math.round((walletTxnCount / (walletTxnCount + bankTxnCount)) * 100);
+      insights.push({
+        type: 'success',
+        title: 'Wallet Adoption',
+        message: `${walletRatio}% of your transaction volume was processed via Wallet.`,
+        explanation: `Generated because ${walletTxnCount} out of ${walletTxnCount + bankTxnCount} total transactions were sourced from uploaded Wallet statements rather than Bank statements.`,
+        metric: `${walletRatio}%`,
+      });
+    }
   }
 
   // ── Predictive Forecast Model ──────────────────────────────────────────────
@@ -270,22 +341,39 @@ export function analyzeFinancials(transactions: TransactionInput[]): FinancialIn
     recurringItems.reduce((sum, item) => sum + item.amount, 0) * 100
   ) / 100;
 
-  const estimatedDiscretionary = Math.round(
-    (totalExpenses > fixedCommitmentTotal ? totalExpenses - fixedCommitmentTotal : totalExpenses * 0.3) * 100
-  ) / 100;
+  // Calculate historical timespan
+  let hasHistoricalData = false;
+  let basisExplanation = '';
+  
+  if (sorted.length > 0) {
+    const minDate = new Date(sorted[0].date).getTime();
+    const maxDate = new Date(sorted[sorted.length - 1].date).getTime();
+    const daysDiff = (maxDate - minDate) / (1000 * 3600 * 24);
+    
+    if (daysDiff >= 14) {
+      hasHistoricalData = true;
+      basisExplanation = `Forecast calculated directly from ${recurringItems.length} detected recurring payment patterns (EMIs, Subscriptions, Utilities, Rent) totaling ₹${fixedCommitmentTotal.toLocaleString('en-IN')} per month over a ${Math.round(daysDiff)}-day historical period.`;
+    } else {
+      basisExplanation = `Insufficient historical data to generate a reliable monthly forecast. The provided transactions only span ${Math.round(daysDiff)} days. A minimum of 14 days of history is required.`;
+    }
+  }
 
-  const projectedBalance = Math.round(
-    (totalIncome - (fixedCommitmentTotal + estimatedDiscretionary)) * 100
-  ) / 100;
+  const estimatedDiscretionary = hasHistoricalData 
+    ? Math.round((totalExpenses > fixedCommitmentTotal ? totalExpenses - fixedCommitmentTotal : totalExpenses * 0.3) * 100) / 100
+    : 0;
+
+  const projectedBalance = hasHistoricalData
+    ? Math.round((totalIncome - (fixedCommitmentTotal + estimatedDiscretionary)) * 100) / 100
+    : 0;
 
   const forecast: ForecastModel = {
-    expectedIncome: totalIncome,
-    expectedFixedCommitments: fixedCommitmentTotal,
+    expectedIncome: hasHistoricalData ? totalIncome : 0,
+    expectedFixedCommitments: hasHistoricalData ? fixedCommitmentTotal : 0,
     estimatedDiscretionaryExpenses: estimatedDiscretionary,
     projectedMonthEndBalance: projectedBalance,
     recurringItems,
-    basisExplanation: `Forecast calculated directly from ${recurringItems.length} detected recurring payment patterns (EMIs, Subscriptions, Utilities, Rent) totaling ₹${fixedCommitmentTotal.toLocaleString('en-IN')} per month.`,
-    hasHistoricalData: false, // Single statement current-month snapshot
+    basisExplanation,
+    hasHistoricalData,
   };
 
   return {
@@ -296,7 +384,7 @@ export function analyzeFinancials(transactions: TransactionInput[]): FinancialIn
       savingsRate,
       discretionarySpendRatio,
       debtToIncomeRatio,
-      totalTransactions: transactions.length,
+      totalTransactions: sorted.length,
     },
     insights,
     forecast,

@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react';
 import { api } from '@/lib/api';
 import Navbar from '@/components/Navbar';
-import { PlusCircle, Trash2, CreditCard, Calendar, TrendingDown, X, AlertCircle } from 'lucide-react';
+import { PlusCircle, Trash2, CreditCard, Calendar, TrendingDown, X, AlertCircle, Edit3 } from 'lucide-react';
 
 const LOAN_TYPES = ['Personal', 'Home', 'Car', 'Education', 'Business', 'Gold', 'Other'];
 const TYPE_COLORS: Record<string, string> = {
@@ -19,7 +19,9 @@ export default function LoansPage() {
   const [detectedEMIs, setDetectedEMIs] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name:'', lenderName:'', principalAmount:'', outstandingAmount:'', emiAmount:'', interestRate:'', tenureMonths:'', loanType:'Personal', startDate:'', nextDueDate:'' });
+  const [editLoan, setEditLoan] = useState<any>(null);
+  const emptyForm = { name:'', lenderName:'', principalAmount:'', outstandingAmount:'', emiAmount:'', interestRate:'', tenureMonths:'', loanType:'Personal', startDate:'', nextDueDate:'' };
+  const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
 
   const fetchLoans = async () => {
@@ -36,12 +38,35 @@ export default function LoansPage() {
     if (!form.name || !form.principalAmount || !form.emiAmount) return;
     setSaving(true);
     try {
-      await api.createLoan(form);
-      setForm({ name:'', lenderName:'', principalAmount:'', outstandingAmount:'', emiAmount:'', interestRate:'', tenureMonths:'', loanType:'Personal', startDate:'', nextDueDate:'' });
+      if (editLoan) {
+        await api.updateLoan(editLoan.id, form);
+        setEditLoan(null);
+      } else {
+        await api.createLoan(form);
+      }
+      setForm(emptyForm);
       setShowForm(false);
       fetchLoans();
     } finally { setSaving(false); }
   };
+
+  const handleEdit = (l: any) => {
+    setEditLoan(l);
+    setForm({
+      name: l.name,
+      lenderName: l.lenderName || '',
+      principalAmount: String(l.principalAmount),
+      outstandingAmount: String(l.outstandingAmount),
+      emiAmount: String(l.emiAmount),
+      interestRate: l.interestRate ? String(l.interestRate) : '',
+      tenureMonths: l.tenureMonths ? String(l.tenureMonths) : '',
+      loanType: l.loanType || 'Personal',
+      startDate: l.startDate ? l.startDate.slice(0, 10) : '',
+      nextDueDate: l.nextDueDate ? l.nextDueDate.slice(0, 10) : '',
+    });
+    setShowForm(true);
+  };
+
 
   const handleDelete = async (id: string) => {
     await api.deleteLoan(id);
@@ -105,12 +130,11 @@ export default function LoansPage() {
           </div>
         )}
 
-        {/* Add Form */}
         {showForm && (
           <div className="mb-6 p-5 rounded-xl border border-blue-500/30 bg-blue-500/5">
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-white font-semibold">Add New Loan</h3>
-              <button onClick={() => setShowForm(false)}><X className="w-4 h-4 text-gray-400" /></button>
+              <h3 className="text-white font-semibold">{editLoan ? 'Edit Loan' : 'Add New Loan'}</h3>
+              <button onClick={() => { setShowForm(false); setEditLoan(null); setForm(emptyForm); }}><X className="w-4 h-4 text-gray-400" /></button>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <input placeholder="Loan name (e.g. HDFC Home Loan)" value={form.name} onChange={e => setForm({...form, name: e.target.value})}
@@ -131,12 +155,14 @@ export default function LoansPage() {
                 className="px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-blue-500" />
               <input type="number" placeholder="Tenure (months)" value={form.tenureMonths} onChange={e => setForm({...form, tenureMonths: e.target.value})}
                 className="px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-blue-500" />
+              <input type="date" placeholder="Start date" value={form.startDate} onChange={e => setForm({...form, startDate: e.target.value})}
+                className="px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-blue-500" />
               <input type="date" placeholder="Next due date" value={form.nextDueDate} onChange={e => setForm({...form, nextDueDate: e.target.value})}
                 className="px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-blue-500" />
             </div>
             <button onClick={handleCreate} disabled={saving}
               className="mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50">
-              {saving ? 'Saving…' : 'Add Loan'}
+              {saving ? 'Saving…' : editLoan ? 'Update Loan' : 'Add Loan'}
             </button>
           </div>
         )}
@@ -152,10 +178,16 @@ export default function LoansPage() {
           </div>
         ) : (
           <div className="space-y-3">
-            {loans.map(l => {
-              const paid = l.principalAmount - l.outstandingAmount;
+            {loans.map((l: any) => {
+              const paid = Math.max(0, l.principalAmount - l.outstandingAmount);
               const paidPct = l.principalAmount > 0 ? Math.min(100, Math.round((paid / l.principalAmount) * 100)) : 0;
               const typeColor = TYPE_COLORS[l.loanType] || TYPE_COLORS['Personal'];
+              const matchedEMIs: any[] = l.matchedEMIs || [];
+              const lastMatchedEMI = matchedEMIs.length > 0
+                ? matchedEMIs.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime())[0]
+                : null;
+              const totalEMIsPaid = matchedEMIs.length;
+
               return (
                 <div key={l.id} className={`p-4 rounded-xl border transition-all ${l.isActive ? 'border-gray-700/30 bg-gray-900/50 hover:border-gray-600/50' : 'border-gray-800/30 bg-gray-900/20 opacity-60'}`}>
                   <div className="flex items-center justify-between mb-3">
@@ -163,6 +195,11 @@ export default function LoansPage() {
                       <div className="flex items-center gap-2 mb-1">
                         <span className={`px-2 py-0.5 rounded-full text-xs border font-medium ${typeColor}`}>{l.loanType}</span>
                         <h3 className="text-white font-medium">{l.name}</h3>
+                        {totalEMIsPaid > 0 && (
+                          <span className="px-1.5 py-0.5 rounded text-xs bg-green-500/20 text-green-400 border border-green-500/30 font-medium">
+                            {totalEMIsPaid} stmt EMI{totalEMIsPaid > 1 ? 's' : ''} matched
+                          </span>
+                        )}
                       </div>
                       {l.lenderName && <p className="text-gray-500 text-xs">{l.lenderName}</p>}
                     </div>
@@ -171,6 +208,9 @@ export default function LoansPage() {
                         <p className="text-red-400 font-semibold">₹{l.emiAmount.toLocaleString('en-IN')}/mo</p>
                         <p className="text-gray-500 text-xs">EMI</p>
                       </div>
+                      <button onClick={() => handleEdit(l)} className="p-1 text-gray-600 hover:text-blue-400 transition-colors">
+                        <Edit3 className="w-4 h-4" />
+                      </button>
                       <button onClick={() => handleDelete(l.id)} className="p-1 text-gray-600 hover:text-red-400 transition-colors">
                         <Trash2 className="w-4 h-4" />
                       </button>
@@ -179,20 +219,28 @@ export default function LoansPage() {
                   <div className="grid grid-cols-3 gap-3 mb-3 text-center">
                     <div><p className="text-white text-sm font-medium">₹{l.principalAmount.toLocaleString('en-IN')}</p><p className="text-gray-500 text-xs">Principal</p></div>
                     <div><p className="text-orange-400 text-sm font-medium">₹{l.outstandingAmount.toLocaleString('en-IN')}</p><p className="text-gray-500 text-xs">Outstanding</p></div>
-                    <div><p className="text-green-400 text-sm font-medium">₹{Math.max(0,paid).toLocaleString('en-IN')}</p><p className="text-gray-500 text-xs">Paid Off</p></div>
+                    <div><p className="text-green-400 text-sm font-medium">₹{paid.toLocaleString('en-IN')}</p><p className="text-gray-500 text-xs">Paid Off</p></div>
                   </div>
                   <div className="h-2 bg-gray-800 rounded-full overflow-hidden mb-1">
                     <div className="h-full bg-gradient-to-r from-green-500 to-emerald-500 rounded-full transition-all" style={{ width: `${paidPct}%` }} />
                   </div>
-                  <div className="flex justify-between text-xs text-gray-500">
+                  <div className="flex justify-between text-xs text-gray-500 mt-1">
                     <span>{paidPct}% paid off</span>
-                    {l.nextDueDate && (
-                      <span className="flex items-center gap-1">
-                        <Calendar className="w-3 h-3" />
-                        Next due: {new Date(l.nextDueDate).toLocaleDateString('en-IN', { day:'2-digit', month:'short' })}
-                      </span>
-                    )}
-                    {l.interestRate && <span>{l.interestRate}% p.a.</span>}
+                    <div className="flex items-center gap-3">
+                      {lastMatchedEMI && (
+                        <span className="flex items-center gap-1 text-green-500">
+                          <TrendingDown className="w-3 h-3" />
+                          Last EMI: {new Date(lastMatchedEMI.date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' })}
+                        </span>
+                      )}
+                      {l.nextDueDate && (
+                        <span className="flex items-center gap-1">
+                          <Calendar className="w-3 h-3" />
+                          Due: {new Date(l.nextDueDate).toLocaleDateString('en-IN', { day:'2-digit', month:'short' })}
+                        </span>
+                      )}
+                      {l.interestRate && <span>{l.interestRate}% p.a.</span>}
+                    </div>
                   </div>
                 </div>
               );

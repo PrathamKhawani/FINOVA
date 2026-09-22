@@ -10,22 +10,60 @@ export const getLoans = async (req: AuthRequest, res: Response): Promise<void> =
       orderBy: { createdAt: 'desc' },
     });
 
-    // Auto-detect EMI transactions from DB for each active loan
+    // Auto-detect EMI transactions from DB
     const emiTxns = await prisma.transaction.findMany({
       where: {
         statement: { userId: req.user!.userId },
-        category: { contains: 'EMI' },
+        isDuplicate: false,
+        OR: [
+          { transactionType: 'EMI/Loan' },
+          { category: { contains: 'EMI' } }
+        ],
         type: 'debit',
       },
       orderBy: { date: 'desc' },
-      take: 10,
+      take: 50,
       select: {
         id: true, date: true, description: true, amount: true,
         category: true, subcategory: true, source: true, provider: true,
+        merchantName: true, counterparty: true
       },
     });
 
-    res.json({ success: true, data: { loans, detectedEMIs: emiTxns } });
+    const enrichedLoans = loans.map(l => ({ ...l, matchedEMIs: [] as any[] }));
+    const unmatchedEMIs: any[] = [];
+
+    // Map EMI transactions to loans where sufficient evidence exists
+    emiTxns.forEach(txn => {
+      let matched = false;
+      for (const loan of enrichedLoans) {
+        // Evidence 1: Exact EMI amount match
+        if (txn.amount === loan.emiAmount) {
+          loan.matchedEMIs.push(txn);
+          matched = true;
+          break;
+        }
+        // Evidence 2: Lender name matches merchant/counterparty
+        if (loan.lenderName && loan.lenderName.length > 2) {
+          const lender = loan.lenderName.toLowerCase();
+          const merchant = (txn.merchantName || '').toLowerCase();
+          const cparty = (txn.counterparty || '').toLowerCase();
+          const desc = (txn.description || '').toLowerCase();
+
+          if (merchant.includes(lender) || cparty.includes(lender) || desc.includes(lender)) {
+            loan.matchedEMIs.push(txn);
+            matched = true;
+            break;
+          }
+        }
+      }
+      
+      if (!matched) {
+        unmatchedEMIs.push(txn);
+      }
+    });
+
+    res.json({ success: true, data: { loans: enrichedLoans, detectedEMIs: unmatchedEMIs.slice(0, 10) } });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Failed to fetch loans' });
   }
@@ -70,15 +108,24 @@ export const updateLoan = async (req: AuthRequest, res: Response): Promise<void>
     const existing = await prisma.loan.findFirst({ where: { id: idStr, userId: req.user!.userId } });
     if (!existing) { res.status(404).json({ success: false, message: 'Loan not found' }); return; }
 
-    const { outstandingAmount, emiAmount, nextDueDate, isActive, loanType } = req.body;
+    const {
+      name, lenderName, principalAmount, outstandingAmount, emiAmount,
+      interestRate, tenureMonths, startDate, nextDueDate, isActive, loanType
+    } = req.body;
     const loan = await prisma.loan.update({
       where: { id: idStr },
       data: {
+        name: name ?? existing.name,
+        lenderName: lenderName !== undefined ? (lenderName || null) : existing.lenderName,
+        principalAmount: principalAmount !== undefined ? parseFloat(principalAmount) : existing.principalAmount,
         outstandingAmount: outstandingAmount !== undefined ? parseFloat(outstandingAmount) : existing.outstandingAmount,
         emiAmount: emiAmount !== undefined ? parseFloat(emiAmount) : existing.emiAmount,
-        nextDueDate: nextDueDate ? new Date(nextDueDate) : existing.nextDueDate,
+        interestRate: interestRate !== undefined ? (interestRate ? parseFloat(interestRate) : null) : existing.interestRate,
+        tenureMonths: tenureMonths !== undefined ? (tenureMonths ? parseInt(tenureMonths) : null) : existing.tenureMonths,
+        startDate: startDate !== undefined ? (startDate ? new Date(startDate) : null) : existing.startDate,
+        nextDueDate: nextDueDate !== undefined ? (nextDueDate ? new Date(nextDueDate) : null) : existing.nextDueDate,
         isActive: isActive !== undefined ? isActive : existing.isActive,
-        loanType: loanType || existing.loanType,
+        loanType: loanType ?? existing.loanType,
       },
     });
     res.json({ success: true, data: { loan } });

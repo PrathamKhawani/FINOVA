@@ -1,83 +1,107 @@
 # FINOVA — Challenges Faced & Solutions
 
-## Semester 7 Development Challenges
+> **Semester 7 Final Documentation**
+> This document records real engineering challenges encountered during FINOVA development and their actual solutions.
 
 ---
 
 ### 1. PDF Text Extraction Without OCR
 
-**Challenge**: Bank statement PDFs vary wildly in format. Some banks use proprietary table layouts, some wrap narrations across two or three lines, and some include headers/footers that interfere with transaction parsing.
+**Challenge**: Bank statement PDFs vary wildly in format. Some banks (ICICI, Axis) use proprietary table layouts with overlapping text columns. Some narrations span 2–3 lines. Headers, footers, and account summary rows interfere with transaction detection.
 
-**Solution**: Used `pdfjs-dist` for text-layer extraction (not OCR). Built bank-specific regex pipelines for HDFC, ICICI, SBI, Axis, and Kotak. Implemented a multi-line narration reconstructor that joins continuation lines based on indentation and column alignment heuristics. Added a `warnings[]` array in the API response that surfaces extraction issues without crashing.
+**Solution**: Built a three-stage extraction pipeline:
+1. **Coordinate-based** (pdfjs-dist): extracts every text item with X/Y pixel coordinates, groups into rows by Y-proximity (6px tolerance), detects column headers dynamically, assigns debit/credit by X-position proximity to column centers.
+2. **Plain text fallback** (pdf-parse): for PDFs where coordinate extraction fails.
+3. **OCR fallback** (Tesseract.js): for scanned/image-based PDFs.
+Added balance reconciliation validation that detects swapped debit/credit columns and auto-corrects them.
 
 ---
 
 ### 2. Categorization Accuracy — Person vs Merchant
 
-**Challenge**: UPI transactions often look like "UPI/Rahul Sharma/9876543210" and simple keyword matching would incorrectly assign these to generic categories.
+**Challenge**: UPI transactions look like "UPI/Rahul Sharma/9876543210" — simple keyword matching would incorrectly categorize these as businesses.
 
-**Solution**: Built a 150+ Indian first-name detection list and combined it with UPI VPA parsing. If a transaction narration contains a recognizable person's name and no matching merchant KB entry, it is classified as "Person-to-Person Transfer" rather than guessing a business category.
+**Solution**: Built a 150+ Indian first-name detection list combined with UPI VPA parsing. If a narration contains a person's name pattern (not in the Merchant KB) the transaction is classified as "Person-to-Person Transfer" with high confidence. This prevents false positives where personal money transfers inflate merchant categories.
 
 ---
 
 ### 3. Wallet Import Without Direct API Access
 
-**Challenge**: PhonePe, Paytm, and Google Pay do not provide open APIs for consumer transaction history. The original requirement included wallet support.
+**Challenge**: PhonePe, Paytm, and Google Pay do not provide public consumer APIs.
 
-**Solution**: Implemented file-based wallet import. Users export their transaction history as CSV or PDF from within their wallet app and upload it to FINOVA. The wallet parser auto-detects the source (PhonePe, Paytm, Google Pay, or generic) from column headers and filename. This is honest and does not claim direct account access. A disclaimer is shown clearly on the Wallet Import page.
+**Solution**: File-based wallet import. Users export their transaction history from within their wallet app as CSV/PDF and upload to FINOVA. The wallet parser auto-detects the source (PhonePe, Paytm, Google Pay, or generic) from column headers and filename patterns. A clear disclaimer is shown on the Wallet Import page. This approach is honest and does not claim direct account access.
 
 ---
 
-### 4. Duplicate Transactions Across Imports
+### 4. Duplicate Transactions Across Bank + Wallet Imports
 
-**Challenge**: A bank statement and a PhonePe export can both contain the same underlying transaction — for example, a payment made via PhonePe that also appears in the linked bank statement debit.
+**Challenge**: A bank statement and a PhonePe export often contain the same transaction — e.g., a PhonePe payment appears in both the PhonePe CSV and the linked HDFC Bank statement as a debit.
 
-**Solution**: Implemented fuzzy duplicate detection comparing amount, transaction type, date window (±2 days), and narration overlap. Flagged duplicates are stored with `isDuplicate: true` and excluded from all financial calculations (savings rate, budgets, category totals), but remain visible in the ledger with a "DUPE?" badge so users can manually verify.
+**Solution**: Fuzzy duplicate detection at upload time comparing: exact amount (±₹0.01), same direction, date within ±2 days, and narration prefix overlap (first 15 chars). Duplicates are stored with `isDuplicate: true` and visible in the ledger with a "DUPE?" badge, but are excluded from all financial calculations.
 
 ---
 
 ### 5. TypeScript Strict Mode Across Controllers
 
-**Challenge**: Express's `req.params.id` returns `string | string[]`. Prisma's Prisma Client rejects `string[]` where `string` is expected, causing TS errors across all new controllers.
+**Challenge**: Express `req.params.id` returns `string | string[]`. Prisma rejects `string[]` where `string` is expected, causing TypeScript errors across all update/delete handlers.
 
-**Solution**: Added `String(req.params.id)` cast in all controller update/delete handlers to safely narrow the type.
+**Solution**: Applied `String(req.params.id)` cast in every controller that uses `:id` params to safely narrow the type. This was the correct fix — no `any` casts needed.
 
 ---
 
 ### 6. Dashboard API Response Shape Mismatch
 
-**Challenge**: The backend financial intelligence service returned fields named `topCategories` and `incomeCategories`, but the dashboard frontend expected `categoryBreakdown` and `incomeBreakdown`, causing silent null data on the chart panels.
+**Challenge**: The financial intelligence service returned `topCategories` and `incomeCategories` fields, but the dashboard frontend expected `categoryBreakdown` and `incomeBreakdown`, causing silent null data in charts.
 
-**Solution**: Updated the dashboard controller to explicitly map and provide both field names so both the dashboard and reports pages receive data in their expected format.
+**Solution**: Updated the dashboard controller to map both field names in the response object so both the dashboard page and the reports page receive data in their expected shape without requiring frontend changes.
 
 ---
 
 ### 7. Prisma Client Regeneration on Windows (EPERM)
 
-**Challenge**: After `prisma db push`, Prisma attempts to overwrite the native DLL for the query engine. On Windows, if the backend process is running, the file is locked and the rename fails with `EPERM: operation not permitted`.
+**Challenge**: After `prisma db push`, Prisma tries to overwrite the native query engine DLL. On Windows, if the backend is running and has the file locked, the rename fails with `EPERM: operation not permitted`.
 
-**Solution**: The schema is still correctly synchronized (the DB push succeeds). The `EPERM` only affects the DLL copy for the Prisma Client library. Restarting the backend process after a schema change ensures it picks up the updated Prisma client.
+**Solution**: The database schema sync still completes correctly. The `EPERM` only affects the Prisma Client library DLL copy. Restarting the backend process after schema changes ensures it loads the updated client binary.
 
 ---
 
 ### 8. ts-node-dev Hot Reload Stale Cache
 
-**Challenge**: During development, ts-node-dev cached an older compiled version of route files in the Windows temp directory. When route files were corrected (wrong middleware name `authenticateToken` → `authenticate`), ts-node-dev continued serving the old compiled version.
+**Challenge**: During development, ts-node-dev cached an older compiled version of route files. When route files were corrected (wrong middleware name `authenticateToken` → `authenticate`), ts-node-dev continued serving the stale compiled version.
 
-**Solution**: Killed and fully restarted the backend server process to force a fresh compilation from source, bypassing the stale temp cache.
+**Solution**: Killed and fully restarted the backend process to force fresh compilation, bypassing the Windows temp cache.
 
 ---
 
-### 9. Authentication Token Persistence on Frontend
+### 9. Authentication Token Persistence on Frontend (SSR)
 
-**Challenge**: Next.js server-side rendering runs before localStorage is available, causing auth token reads to fail and redirect loops on protected pages.
+**Challenge**: Next.js server-side rendering runs before `localStorage` is available, causing auth token reads to fail during SSR and creating redirect loops on protected pages.
 
-**Solution**: All token reads are guarded with `typeof window === 'undefined'` checks. The `AuthContext` loads the user from localStorage only after hydration on the client side, and the `middleware.ts` uses cookie-based auth-state hints rather than reading the JWT directly.
+**Solution**: All token reads are guarded with `typeof window === 'undefined'` checks in `api.ts`. The `AuthContext` loads the user from localStorage only after client-side hydration. The `middleware.ts` uses cookie-based auth state hints rather than reading the JWT directly.
 
 ---
 
 ### 10. Multi-Bank Statement Layout Differences
 
-**Challenge**: HDFC uses a six-column format with separate Debit/Credit/Balance columns. SBI uses a four-column format where credits are prefixed with "+" in the same column.
+**Challenge**: HDFC uses a six-column format with separate Debit/Credit/Balance columns. SBI uses a four-column format where credits are prefixed with "+" in the same column. Kotak wraps narrations across 3 rows.
 
-**Solution**: The PDF parser applies bank-specific regex patterns after detecting the bank name from the PDF header. Each bank has its own row parser that normalizes to a common `{ date, description, debit, credit, balance }` structure before passing to the categorizer.
+**Solution**: Dynamic column header detection reads the PDF's header row to learn column X-positions for each statement, rather than using hardcoded offsets. Balance reconciliation validates the parsed direction assignments and auto-corrects swapped columns.
+
+---
+
+### 11. Missing /categories Route Registration (Discovered in Audit)
+
+**Challenge**: The `getCategories()` controller function was implemented in `transactions.controller.ts` but was never registered as a route in `transactions.routes.ts`. Calls to `GET /api/transactions/categories` returned 404.
+
+**Solution**: Added `router.get('/categories', getCategories)` to `transactions.routes.ts`. This was discovered by the integration test suite (55 automated API tests) and fixed before final submission.
+
+---
+
+### 12. Private File Exposure via express.static (Security Audit)
+
+**Challenge**: The backend was serving the `uploads/` directory publicly via `express.static()`, meaning anyone with the URL path could download other users' bank statement PDFs.
+
+**Solution**:
+1. Removed the `express.static('/uploads')` middleware from `index.ts`.
+2. Added `fs.unlinkSync()` in a `finally` block to both upload handlers, ensuring raw files are deleted from disk immediately after parsing — regardless of success or failure.
+3. Disabled Prisma's `query` log level to prevent raw financial narrations from leaking into terminal logs.

@@ -74,6 +74,12 @@ model Transaction {
   duplicateOf     String?       // ID of the transaction this might duplicate
   needsReview     Boolean       @default(false)
   classificationReason String?  // WHY this category was assigned
+  entityType           String?  // 'Known Merchant' | 'Known Person' | 'Known Financial Institution' | etc.
+  businessType         String?  // 'Quick Commerce' | 'Food Delivery' | 'Cab Aggregator' | etc.
+  legalName            String?  // Registered legal name of the entity
+  parentCompany        String?  // Holding company if different from brand
+  extractedVPA         String?  // Extracted UPI VPA from the narration
+  matchedAlias         String?  // Which alias triggered the KB match
   createdAt       DateTime      @default(now())
   statement       BankStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
 }
