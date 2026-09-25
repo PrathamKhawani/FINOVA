@@ -29,12 +29,12 @@ export const upload = multer({
 // ── Helper: parse date string to Date ─────────────────────────────────────────
 const parseDate = (dateStr: string): Date => {
   const formats = [
-    { regex: /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/, handler: (m: RegExpMatchArray) => new Date(`20${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`) },
-    { regex: /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, handler: (m: RegExpMatchArray) => new Date(`${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`) },
-    { regex: /^(\d{1,2})-(\d{1,2})-(\d{4})$/, handler: (m: RegExpMatchArray) => new Date(`${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`) },
-    { regex: /^(\d{4})-(\d{1,2})-(\d{1,2})$/, handler: (m: RegExpMatchArray) => new Date(m[0]) },
-    { regex: /^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})$/, handler: (m: RegExpMatchArray) => new Date(`${m[1]} ${m[2]} ${m[3]}`) },
-    { regex: /^(\d{1,2})\s+([A-Za-z]{3,9})$/, handler: (m: RegExpMatchArray) => new Date(`${m[1]} ${m[2]} 2025`) },
+    { regex: /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/, handler: (m: RegExpMatchArray) => new Date(`20${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}T12:00:00Z`) },
+    { regex: /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, handler: (m: RegExpMatchArray) => new Date(`${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}T12:00:00Z`) },
+    { regex: /^(\d{1,2})-(\d{1,2})-(\d{4})$/, handler: (m: RegExpMatchArray) => new Date(`${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}T12:00:00Z`) },
+    { regex: /^(\d{4})-(\d{1,2})-(\d{1,2})$/, handler: (m: RegExpMatchArray) => new Date(`${m[0]}T12:00:00Z`) },
+    { regex: /^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})$/, handler: (m: RegExpMatchArray) => new Date(`${m[1]} ${m[2]} ${m[3]} 12:00:00 UTC`) },
+    { regex: /^(\d{1,2})\s+([A-Za-z]{3,9})$/, handler: (m: RegExpMatchArray) => new Date(`${m[1]} ${m[2]} 2025 12:00:00 UTC`) },
   ];
   for (const { regex, handler } of formats) {
     const match = dateStr.match(regex);

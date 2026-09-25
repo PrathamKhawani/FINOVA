@@ -87,6 +87,12 @@ function parseAmount(str: string | undefined | null): number | null {
   if (!str) return null;
   const cleaned = str.replace(/[£$₹\u20B9Rs,\s]/g, '').replace(/\.\s+/g, '.').trim();
   if (cleaned === '' || cleaned === '-' || cleaned === 'NIL') return null;
+  
+  // Reject long strings of digits without decimals (e.g. 6952387830, UPI IDs, Account numbers)
+  if (/^\d{6,}$/.test(cleaned) && !str.includes('.')) {
+    return null;
+  }
+  
   const n = parseFloat(cleaned);
   return isNaN(n) ? null : n;
 }
@@ -108,7 +114,7 @@ function extractDate(str: string): string | null {
   return null;
 }
 
-const AMOUNT_RE = /(?:[£$₹\u20B9Rs]\s*)?[\d,]+(?:\.\s*\d{1,2})?\b/g;
+const AMOUNT_RE = /(?:[£$₹\u20B9Rs]\s*)?(?:\d{1,3}(?:,\d{2,3})+|\d+)(?:\.\s*\d{1,2})?\b/g;
 
 function extractAmounts(str: string): number[] {
   const raw = [...str.matchAll(AMOUNT_RE)].map((m) => parseAmount(m[0]));
