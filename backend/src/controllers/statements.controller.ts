@@ -28,23 +28,35 @@ export const upload = multer({
 
 // ── Helper: parse date string to Date ─────────────────────────────────────────
 const parseDate = (dateStr: string): Date => {
-  const formats = [
-    { regex: /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/, handler: (m: RegExpMatchArray) => new Date(`20${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}T12:00:00Z`) },
-    { regex: /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, handler: (m: RegExpMatchArray) => new Date(`${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}T12:00:00Z`) },
-    { regex: /^(\d{1,2})-(\d{1,2})-(\d{4})$/, handler: (m: RegExpMatchArray) => new Date(`${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}T12:00:00Z`) },
-    { regex: /^(\d{4})-(\d{1,2})-(\d{1,2})$/, handler: (m: RegExpMatchArray) => new Date(`${m[0]}T12:00:00Z`) },
-    { regex: /^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})$/, handler: (m: RegExpMatchArray) => new Date(`${m[1]} ${m[2]} ${m[3]} 12:00:00 UTC`) },
-    { regex: /^(\d{1,2})\s+([A-Za-z]{3,9})$/, handler: (m: RegExpMatchArray) => new Date(`${m[1]} ${m[2]} 2025 12:00:00 UTC`) },
+  const formats: Array<{ regex: RegExp; handler: (m: RegExpMatchArray) => Date }> = [
+    { regex: /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/, handler: (m) => new Date(`20${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}T12:00:00Z`) },
+    { regex: /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, handler: (m) => new Date(`${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}T12:00:00Z`) },
+    { regex: /^(\d{1,2})-(\d{1,2})-(\d{4})$/, handler: (m) => new Date(`${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}T12:00:00Z`) },
+    { regex: /^(\d{4})-(\d{1,2})-(\d{1,2})$/, handler: (m) => new Date(`${m[0]}T12:00:00Z`) },
+    // DD Mon YYYY  e.g. "5 Oct 2024"
+    { regex: /^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})$/, handler: (m) => new Date(`${m[1]} ${m[2]} ${m[3]} 12:00:00 UTC`) },
+    // Mon DD, YYYY or Mon DD YYYY  e.g. "Oct 5, 2024" (Google Pay format)
+    { regex: /^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/, handler: (m) => new Date(`${m[2]} ${m[1]} ${m[3]} 12:00:00 UTC`) },
+    // Month DD, YYYY  e.g. "October 5, 2024" (long Google Pay format)
+    { regex: /^([A-Za-z]{4,9})\s+(\d{1,2}),?\s+(\d{4})$/, handler: (m) => new Date(`${m[2]} ${m[1]} ${m[3]} 12:00:00 UTC`) },
+    // DD Mon without year — use current year; logs a warning so extraction issues are visible
+    { regex: /^(\d{1,2})\s+([A-Za-z]{3,9})$/, handler: (m) => {
+      const year = new Date().getFullYear();
+      console.warn(`[FINOVA parseDate] "${m[0]}" has no year — using ${year}. Verify PDF extraction for correctness.`);
+      return new Date(`${m[1]} ${m[2]} ${year} 12:00:00 UTC`);
+    }},
   ];
   for (const { regex, handler } of formats) {
-    const match = dateStr.match(regex);
+    const match = dateStr.trim().match(regex);
     if (match) {
       const d = handler(match);
       if (!isNaN(d.getTime())) return d;
     }
   }
+  console.warn(`[FINOVA parseDate] Unrecognised date string: "${dateStr}" — defaulting to now`);
   return new Date();
 };
+
 
 // ── Duplicate Detection ───────────────────────────────────────────────────────
 async function detectDuplicates(
