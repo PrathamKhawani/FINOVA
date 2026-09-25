@@ -1,25 +1,15 @@
 import { Response } from 'express';
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
 import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 import { parsePDF } from '../services/pdf-parser.service';
 import { parseWalletCSV, parseWalletPDF } from '../services/wallet-parser.service';
 import { categorizeTransaction, isIncomeCategory, isExpenseCategory } from '../services/categorizer.service';
 
-// ── Multer Configuration — accept PDF and CSV ─────────────────────────────────
-const uploadDir = path.join(process.cwd(), 'uploads');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename: (_req, file, cb) => {
-    const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
-    cb(null, `${unique}${path.extname(file.originalname)}`);
-  },
-});
-
+// ── Multer Configuration — memory storage (Vercel-compatible, no filesystem writes) ──
+// Files are processed in-memory and never persisted to disk.
+// This works for Vercel serverless functions which have read-only /tmp only.
 const fileFilter = (_req: any, file: Express.Multer.File, cb: multer.FileFilterCallback) => {
   const allowed = ['application/pdf', 'text/csv', 'application/vnd.ms-excel', 'text/plain'];
   const ext = path.extname(file.originalname).toLowerCase();
@@ -31,7 +21,7 @@ const fileFilter = (_req: any, file: Express.Multer.File, cb: multer.FileFilterC
 };
 
 export const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   fileFilter,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
 });
@@ -105,15 +95,23 @@ async function detectDuplicates(
 
 // ── POST /api/statements/upload (Bank Statement — PDF) ────────────────────────
 export const uploadStatement = async (req: AuthRequest, res: Response): Promise<void> => {
-  let filePath = '';
   try {
     if (!req.file) {
+      console.log('[FINOVA Upload] Route reached but no file in request');
       res.status(400).json({ success: false, message: 'No file provided' });
       return;
     }
 
-    filePath = req.file.path;
-    const buffer = fs.readFileSync(filePath);
+    // Diagnostic log (safe — no file content logged)
+    console.log('[FINOVA Upload] File received:', {
+      name: req.file.originalname,
+      type: req.file.mimetype,
+      size: req.file.size,
+      bufferLength: req.file.buffer?.length ?? 'N/A',
+    });
+
+    // With memoryStorage, file content is directly in req.file.buffer
+    const buffer = req.file.buffer;
     const ext = path.extname(req.file.originalname).toLowerCase();
 
     let bankName = 'Unknown Bank';
@@ -128,6 +126,7 @@ export const uploadStatement = async (req: AuthRequest, res: Response): Promise<
       period = result.period;
       rawTxs = result.transactions;
       warnings = result.warnings || [];
+      console.log('[FINOVA Upload] PDF parsed:', { bankName, period, txCount: rawTxs.length, warnings: warnings.length });
     } else {
       res.status(422).json({ success: false, message: 'Bank statement must be a PDF. For wallet/CSV files use the Wallet Import page.' });
       return;
@@ -201,7 +200,8 @@ export const uploadStatement = async (req: AuthRequest, res: Response): Promise<
         source,
         provider: bankName,
         bankName,
-        fileName: req.file.filename,
+        // memoryStorage does NOT set req.file.filename — use originalname as stored name
+        fileName: req.file.filename || req.file.originalname,
         originalName: req.file.originalname,
         period,
         totalCredits,
@@ -219,26 +219,34 @@ export const uploadStatement = async (req: AuthRequest, res: Response): Promise<
       warnings: warnings.length > 0 ? warnings : undefined,
     });
   } catch (error: any) {
-    console.error('Upload error:', error);
-    res.status(500).json({ success: false, message: 'Failed to process statement' });
-  } finally {
-    if (filePath && fs.existsSync(filePath)) {
-      try { fs.unlinkSync(filePath); } catch (e) { console.error('Failed to delete temp file', e); }
+    // ── Structured diagnostic logging for production (SAFE — no secrets logged) ──
+    console.error('[FINOVA Upload] FATAL — statement processing failed');
+    console.error('[FINOVA Upload] file:', req.file ? `${req.file.originalname} ${req.file.mimetype} ${req.file.size}b` : 'NO FILE');
+    console.error('[FINOVA Upload] error name:', error?.name);
+    console.error('[FINOVA Upload] error message:', error?.message);
+    console.error('[FINOVA Upload] error code:', error?.code);
+    if (error?.stack) {
+      // Log only first 5 lines of stack to avoid leaking internals
+      const stackLines = (error.stack as string).split('\n').slice(0, 5).join('\n');
+      console.error('[FINOVA Upload] stack (truncated):', stackLines);
     }
+    const safeMsg = error?.message
+      ? `Statement processing failed: ${error.message.substring(0, 200)}`
+      : 'Failed to process statement';
+    res.status(500).json({ success: false, message: safeMsg });
   }
 };
 
 // ── POST /api/wallet/upload (Wallet — CSV or PDF) ────────────────────────────
 export const uploadWalletStatement = async (req: AuthRequest, res: Response): Promise<void> => {
-  let filePath = '';
   try {
     if (!req.file) {
       res.status(400).json({ success: false, message: 'No file provided' });
       return;
     }
 
-    filePath = req.file.path;
-    const buffer = fs.readFileSync(filePath);
+    // With memoryStorage, file content is directly in req.file.buffer
+    const buffer = req.file.buffer;
     const ext = path.extname(req.file.originalname).toLowerCase();
 
     let provider = 'Wallet';
@@ -328,7 +336,8 @@ export const uploadWalletStatement = async (req: AuthRequest, res: Response): Pr
         source: 'WALLET',
         provider,
         bankName: provider,
-        fileName: req.file.filename,
+        // memoryStorage does NOT set req.file.filename — use originalname as stored name
+        fileName: req.file.filename || req.file.originalname,
         originalName: req.file.originalname,
         period: '',
         totalCredits,
@@ -346,12 +355,15 @@ export const uploadWalletStatement = async (req: AuthRequest, res: Response): Pr
       warnings: warnings.length > 0 ? warnings : undefined,
     });
   } catch (error: any) {
-    console.error('Wallet upload error:', error);
-    res.status(500).json({ success: false, message: 'Failed to process wallet statement' });
-  } finally {
-    if (filePath && fs.existsSync(filePath)) {
-      try { fs.unlinkSync(filePath); } catch (e) { console.error('Failed to delete temp wallet file', e); }
-    }
+    console.error('[FINOVA Wallet Upload] FATAL — wallet statement processing failed');
+    console.error('[FINOVA Wallet Upload] file:', req.file ? `${req.file.originalname} ${req.file.mimetype} ${req.file.size}b` : 'NO FILE');
+    console.error('[FINOVA Wallet Upload] error name:', error?.name);
+    console.error('[FINOVA Wallet Upload] error message:', error?.message);
+    console.error('[FINOVA Wallet Upload] error code:', error?.code);
+    const safeMsg = error?.message
+      ? `Wallet processing failed: ${error.message.substring(0, 200)}`
+      : 'Failed to process wallet statement';
+    res.status(500).json({ success: false, message: safeMsg });
   }
 };
 
@@ -398,8 +410,7 @@ export const deleteStatement = async (req: AuthRequest, res: Response): Promise<
       res.status(404).json({ success: false, message: 'Statement not found' });
       return;
     }
-    const filePath = path.join(process.cwd(), 'uploads', statement.fileName);
-    if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    // No file to delete from disk (using memory storage in production)
     await prisma.bankStatement.delete({ where: { id } });
     res.json({ success: true, message: 'Statement deleted successfully' });
   } catch (error) {

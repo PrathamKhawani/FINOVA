@@ -1,19 +1,68 @@
 /**
- * FINOVA PDF Parser Service – Format-Adaptive & Multi-Line Pipeline v3
+ * FINOVA PDF Parser Service – Format-Adaptive & Multi-Line Pipeline v4
+ *
+ * Vercel-Compatible Fixes (v4):
+ *  - pdfjs-dist worker disabled (GlobalWorkerOptions.workerSrc = '') to prevent
+ *    worker file lookup failure in serverless environments.
+ *  - pdf-parse used as primary text extraction fallback.
+ *  - Tesseract.js OCR wrapped safely; only invoked when text extraction yields nothing.
+ *  - All pipeline stages emit structured console logs for Vercel log visibility.
  *
  * Features:
  *  1. Format-Adaptive PDF Text & Coordinate Extraction (pdfjs-dist → pdf-parse → Tesseract OCR)
- *  2. Dynamic Bank & Period Detection (Infers bank name from statement text, no hardcoded limits)
- *  3. Dynamic Column Header Detection (Supports variations: Post Dt, Val Dt, Details/Narrations, Chq/Ref No, Debit, Credit, Balance)
- *  4. Multi-Line Transaction Row Reconstruction (Joins continuation lines like UPI/..., /KKBK/..., PREMIUM DUE into a single transaction narration)
- *  5. Raw Narration Preservation (Preserves full raw statement text AND clean description)
- *  6. Column-Aware Debit/Credit Assignment (Uses column positions as primary direction evidence)
+ *  2. Dynamic Bank & Period Detection (Infers bank name from statement text)
+ *  3. Dynamic Column Header Detection (Supports: Post Dt, Val Dt, Details, Chq/Ref No, Debit, Credit, Balance)
+ *  4. Multi-Line Transaction Row Reconstruction
+ *  5. Raw Narration Preservation
+ *  6. Column-Aware Debit/Credit Assignment
  *  7. Balance Reconciliation & Auto-Correction
  */
 
-const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
-const pdfParse = require('pdf-parse');
-const Tesseract = require('tesseract.js');
+// ── Imports ───────────────────────────────────────────────────────────────────
+// pdfjs-dist: disable the worker before anything else to avoid Vercel worker-file lookup
+let pdfjsLib: any = null;
+let pdfParse: any = null;
+let Tesseract: any = null;
+
+function getPdfjsLib() {
+  if (!pdfjsLib) {
+    try {
+      pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
+      // CRITICAL: disable worker in serverless — no worker JS file available
+      if (pdfjsLib.GlobalWorkerOptions) {
+        pdfjsLib.GlobalWorkerOptions.workerSrc = '';
+      }
+      console.log('[FINOVA Parser] pdfjs-dist loaded, worker disabled');
+    } catch (e: any) {
+      console.error('[FINOVA Parser] pdfjs-dist load failed:', e?.message);
+    }
+  }
+  return pdfjsLib;
+}
+
+function getPdfParse() {
+  if (!pdfParse) {
+    try {
+      pdfParse = require('pdf-parse');
+      console.log('[FINOVA Parser] pdf-parse loaded');
+    } catch (e: any) {
+      console.error('[FINOVA Parser] pdf-parse load failed:', e?.message);
+    }
+  }
+  return pdfParse;
+}
+
+function getTesseract() {
+  if (!Tesseract) {
+    try {
+      Tesseract = require('tesseract.js');
+      console.log('[FINOVA Parser] tesseract.js loaded');
+    } catch (e: any) {
+      console.error('[FINOVA Parser] tesseract.js load failed:', e?.message);
+    }
+  }
+  return Tesseract;
+}
 
 // ── Public Interfaces ─────────────────────────────────────────────────────────
 export interface RawTransaction {
@@ -66,13 +115,30 @@ function extractAmounts(str: string): number[] {
   return raw.filter((n): n is number => n !== null && n > 0);
 }
 
-// ── Step 1: Coordinate-Based Text Extraction ──────────────────────────────────
+// ── Step 1a: Coordinate-Based Text Extraction (pdfjs-dist) ───────────────────
 interface TextItem { str: string; x: number; y: number }
 
 async function extractStructuredLines(buffer: Buffer): Promise<{ lines: string[]; items: TextItem[][] }> {
+  const lib = getPdfjsLib();
+  if (!lib) {
+    console.log('[FINOVA Parser] pdfjs-dist unavailable, skipping coordinate extraction');
+    return { lines: [], items: [] };
+  }
+
   try {
     const data = new Uint8Array(buffer);
-    const doc = await pdfjsLib.getDocument({ data }).promise;
+    console.log('[FINOVA Parser] Starting pdfjs coordinate extraction, buffer size:', buffer.length);
+
+    const loadingTask = lib.getDocument({
+      data,
+      // Disable worker explicitly at task level too
+      useWorkerFetch: false,
+      isEvalSupported: false,
+      useSystemFonts: true,
+    });
+    const doc = await loadingTask.promise;
+    console.log('[FINOVA Parser] pdfjs: document loaded, pages:', doc.numPages);
+
     const allLines: string[] = [];
     const allItems: TextItem[][] = [];
 
@@ -103,33 +169,58 @@ async function extractStructuredLines(buffer: Buffer): Promise<{ lines: string[]
         allItems.push(lineItems);
       }
     }
+
+    console.log('[FINOVA Parser] pdfjs: extracted', allLines.length, 'lines across', doc.numPages, 'pages');
     return { lines: allLines, items: allItems };
-  } catch {
+  } catch (e: any) {
+    console.error('[FINOVA Parser] pdfjs coordinate extraction error:', e?.message);
     return { lines: [], items: [] };
   }
 }
 
+// ── Step 1b: pdf-parse Text Extraction (primary fallback) ────────────────────
 async function extractTextFallback(buffer: Buffer): Promise<string[]> {
+  const parse = getPdfParse();
+  if (!parse) {
+    console.log('[FINOVA Parser] pdf-parse unavailable');
+    return [];
+  }
   try {
-    const result = await pdfParse(buffer);
-    return (result.text || '').split('\n').map((l: string) => l.trim()).filter(Boolean);
-  } catch {
+    console.log('[FINOVA Parser] Attempting pdf-parse text extraction');
+    const result = await parse(buffer);
+    const text = result.text || '';
+    const lines = text.split('\n').map((l: string) => l.trim()).filter(Boolean);
+    console.log('[FINOVA Parser] pdf-parse: extracted', lines.length, 'lines,', text.length, 'chars');
+    return lines;
+  } catch (e: any) {
+    console.error('[FINOVA Parser] pdf-parse extraction error:', e?.message);
     return [];
   }
 }
 
+// ── Step 1c: Tesseract OCR Fallback ──────────────────────────────────────────
 async function ocrFallback(buffer: Buffer): Promise<string[]> {
+  const tess = getTesseract();
+  if (!tess) {
+    console.log('[FINOVA Parser] tesseract.js unavailable, OCR skipped');
+    return [];
+  }
   try {
-    const worker = await Tesseract.createWorker('eng');
+    console.log('[FINOVA Parser] Starting Tesseract OCR on buffer, size:', buffer.length);
+    const worker = await tess.createWorker('eng');
     const ret = await worker.recognize(buffer);
     await worker.terminate();
-    return (ret.data.text || '').split('\n').map((l: string) => l.trim()).filter(Boolean);
-  } catch {
+    const text = ret.data.text || '';
+    const lines = text.split('\n').map((l: string) => l.trim()).filter(Boolean);
+    console.log('[FINOVA Parser] OCR: extracted', lines.length, 'lines,', text.length, 'chars');
+    return lines;
+  } catch (e: any) {
+    console.error('[FINOVA Parser] OCR error:', e?.message);
     return [];
   }
 }
 
-// ── Step 2: Format-Adaptive Bank & Period Detection ───────────────────────────
+// ── Step 2: Format-Adaptive Bank & Period Detection ──────────────────────────
 const KNOWN_BANK_PATTERNS: [RegExp, string][] = [
   [/hdfc\s*bank/i, 'HDFC Bank'],
   [/state\s*bank\s*of\s*india|(?<!\w)sbi(?!\w)/i, 'State Bank of India'],
@@ -179,7 +270,7 @@ function detectPeriod(lines: string[]): string {
   return 'Monthly Statement Period';
 }
 
-// ── Step 3: Dynamic Format-Adaptive Column Header Detection ───────────────────
+// ── Step 3: Dynamic Format-Adaptive Column Header Detection ──────────────────
 const HEADER_KEYWORDS = {
   date:        ['date', 'txn date', 'transaction date', 'value date', 'posting date', 'trans date', 'post dt', 'val dt', 'post date', 'val date'],
   description: ['description', 'narration', 'particulars', 'details', 'transaction details', 'remarks', 'narration/details', 'details/narrations'],
@@ -239,6 +330,7 @@ function detectColumnHeaders(items: TextItem[][]): ColumnMap {
       result.creditX  = tempMap.creditX;
       result.balanceX = tempMap.balanceX;
       result.headerLineIdx = i;
+      console.log('[FINOVA Parser] Column header detected at line', i, '| debitX:', tempMap.debitX, 'creditX:', tempMap.creditX, 'balanceX:', tempMap.balanceX);
       break;
     }
   }
@@ -491,23 +583,48 @@ function validateTransactions(txns: RawTransaction[]): string[] {
 
 // ── Main Exported Parser Function ─────────────────────────────────────────────
 export async function parsePDF(buffer: Buffer): Promise<ParsedStatement> {
-  let { lines, items } = await extractStructuredLines(buffer);
-  let usedOCR = false;
+  console.log('[FINOVA Parser] parsePDF called, buffer size:', buffer.length);
 
-  if (lines.length < 5) {
-    lines = await extractTextFallback(buffer);
-    items = [];
+  // Validate buffer
+  if (!buffer || buffer.length === 0) {
+    throw new Error('PDF buffer is empty');
+  }
+  // Check PDF magic bytes (%PDF)
+  if (buffer.length < 4 || buffer.slice(0, 4).toString('ascii') !== '%PDF') {
+    throw new Error('File does not appear to be a valid PDF (missing %PDF header)');
   }
 
+  // ── Stage 1: pdfjs coordinate extraction ──
+  let { lines, items } = await extractStructuredLines(buffer);
+  let usedOCR = false;
+  let extractionMethod = 'pdfjs-coordinate';
+
+  // ── Stage 2: pdf-parse text fallback if pdfjs yielded too little ──
   if (lines.length < 5) {
-    console.log('[FINOVA Parser] Running Tesseract OCR...');
+    console.log('[FINOVA Parser] pdfjs lines insufficient (', lines.length, '), trying pdf-parse fallback');
+    lines = await extractTextFallback(buffer);
+    items = [];
+    extractionMethod = 'pdf-parse';
+  }
+
+  // ── Stage 3: OCR fallback only if both text methods fail ──
+  if (lines.length < 5) {
+    console.log('[FINOVA Parser] pdf-parse also insufficient (', lines.length, '), attempting Tesseract OCR');
     lines = await ocrFallback(buffer);
     items = [];
     usedOCR = true;
+    extractionMethod = 'tesseract-ocr';
+  }
+
+  console.log('[FINOVA Parser] Extraction method used:', extractionMethod, '| lines extracted:', lines.length);
+
+  if (lines.length === 0) {
+    throw new Error('PDF contains no extractable text. The file may be corrupted, encrypted, or a blank scanned image that OCR could not process.');
   }
 
   const bankName = detectBank(lines);
   const period   = detectPeriod(lines);
+  console.log('[FINOVA Parser] Detected bank:', bankName, '| period:', period);
 
   let transactions: RawTransaction[] = [];
   let warnings: string[] = [];
@@ -516,15 +633,21 @@ export async function parsePDF(buffer: Buffer): Promise<ParsedStatement> {
     warnings.push('PDF required OCR processing for text extraction.');
   }
 
+  // ── Column-aware parsing (only when pdfjs gave us coordinates) ──
   if (items.length > 0) {
     const colMap = detectColumnHeaders(items);
     if (colMap.headerLineIdx >= 0) {
       transactions = parseRowsWithColumns(items, colMap, colMap.headerLineIdx);
+      console.log('[FINOVA Parser] Column-aware parsing:', transactions.length, 'transactions');
+    } else {
+      console.log('[FINOVA Parser] No column header found in coordinate data, falling back to plain-text');
     }
   }
 
+  // ── Plain-text fallback ──
   if (transactions.length === 0) {
     transactions = parsePlainTextLines(lines);
+    console.log('[FINOVA Parser] Plain-text parsing:', transactions.length, 'transactions');
   }
 
   const valWarnings = validateTransactions(transactions);
@@ -543,5 +666,6 @@ export async function parsePDF(buffer: Buffer): Promise<ParsedStatement> {
     }
   }
 
+  console.log('[FINOVA Parser] Final result:', transactions.length, 'transactions |', warnings.length, 'warnings');
   return { bankName, period, transactions, warnings };
 }
