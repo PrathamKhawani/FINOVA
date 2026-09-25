@@ -581,13 +581,12 @@ export async function parsePDF(buffer: Buffer): Promise<ParsedStatement> {
     throw new Error('File does not appear to be a valid PDF (missing %PDF header)');
   }
 
-  // ── Stage 1: pdfjs-dist coordinate extraction (primary — Vercel-safe, no worker) ──
-  // pdfjs-dist v3.11 with workerSrc='' runs entirely in the main thread.
-  // This is the ONLY engine that correctly handles all PDF xref table formats.
+  // ── Stage 1: unpdf coordinate extraction (primary — serverless-safe, no worker file) ──
+  // unpdf bundles its own pdfjs WASM — no pdf.worker.js lookup, works on Vercel/Lambda.
   // pdf-parse v1.1.1 uses an ancient pdfjs v1.10.100 internally that crashes on some PDFs.
   let { lines, items } = await extractStructuredLines(buffer);
   let usedOCR = false;
-  let extractionMethod = 'pdfjs-coordinate';
+  let extractionMethod = 'unpdf-coordinate';
 
   // ── Stage 2: pdf-parse text fallback if pdfjs yielded too little ──
   if (lines.length < 5) {
