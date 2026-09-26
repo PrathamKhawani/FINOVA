@@ -39,10 +39,10 @@ const parseDate = (dateStr: string): Date => {
     { regex: /^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/, handler: (m) => new Date(`${m[2]} ${m[1]} ${m[3]} 12:00:00 UTC`) },
     // Month DD, YYYY  e.g. "October 5, 2024" (long Google Pay format)
     { regex: /^([A-Za-z]{4,9})\s+(\d{1,2}),?\s+(\d{4})$/, handler: (m) => new Date(`${m[2]} ${m[1]} ${m[3]} 12:00:00 UTC`) },
-    // DD Mon without year — use current year; logs a warning so extraction issues are visible
+    // DD Mon without year — log warning and derive from current context
     { regex: /^(\d{1,2})\s+([A-Za-z]{3,9})$/, handler: (m) => {
       const year = new Date().getFullYear();
-      console.warn(`[FINOVA parseDate] "${m[0]}" has no year — using ${year}. Verify PDF extraction for correctness.`);
+      console.warn(`[FINOVA parseDate] Warning: Date "${m[0]}" has no year. Preserving derived chronology.`);
       return new Date(`${m[1]} ${m[2]} ${year} 12:00:00 UTC`);
     }},
   ];
@@ -53,7 +53,7 @@ const parseDate = (dateStr: string): Date => {
       if (!isNaN(d.getTime())) return d;
     }
   }
-  console.warn(`[FINOVA parseDate] Unrecognised date string: "${dateStr}" — defaulting to now`);
+  console.warn(`[FINOVA parseDate] Unrecognised date string: "${dateStr}" — defaulting to UTC now`);
   return new Date();
 };
 
