@@ -5,13 +5,14 @@
  *   1. Generic CSV wallet exports (PhonePe, Google Pay, Paytm, Amazon Pay, etc.)
  *   2. Google Pay PDF transaction history (card/multiline layout)
  *   3. PhonePe PDF transaction history (row layout)
- *   4. Paytm Passbook / Wallet PDF (table layout)
+ *   4. Paytm Passbook / Wallet PDF (table layout: Date & Time → Details → Notes & Tags → Your Account → Amount)
  *   5. BHIM / Bank UPI PDF statements (column/table or card layout)
  *   6. Dynamic fallback for ANY online payment/UPI platform PDF
  *
  * Features:
+ *   - Strict document-level source detection (NEVER defaults to Google Pay; NEVER uses transaction UPI IDs/merchants to guess source)
  *   - Native PDF extraction via `unpdf` (serverless-native, no worker file, Vercel safe)
- *   - Universal multi-strategy parser: Table/Column Parser -> Multiline Card Parser -> Sliding Window Scanner
+ *   - Universal structure-aware parser: Coordinate Table Parser -> Multiline Card Parser -> Sliding Window Scanner
  *   - Accurate extraction of: Date, Time, Transaction ID / UPI Ref, Counterparty/Merchant, Amount, Direction (Sent/Received), Status, Raw Narration
  *   - Preserves original raw narration for complete auditability
  *   - Never fabricates financial values; tags uncertain items for review
@@ -30,14 +31,14 @@ export interface ParsedWalletTransaction {
 }
 
 export interface WalletParseResult {
-  provider: string;       // "PhonePe" | "Paytm" | "Google Pay" | "BHIM" | "UPI Statement" | "Wallet"
+  provider: string;       // "PhonePe" | "Paytm" | "Google Pay" | "BHIM" | "UPI Statement" | "Unknown / Not specified"
   transactions: ParsedWalletTransaction[];
   warnings: string[];
 }
 
 // ── CSV Column Name Aliases ───────────────────────────────────────────────────
 const DATE_COLS = ['date', 'transaction date', 'txn date', 'value date', 'datetime', 'post date'];
-const DESC_COLS = ['description', 'narration', 'details', 'transaction description', 'particulars', 'remarks', 'note', 'paid to', 'received from'];
+const DESC_COLS = ['description', 'narration', 'details', 'transaction details', 'particulars', 'remarks', 'note', 'paid to', 'received from'];
 const DEBIT_COLS = ['debit', 'debit amount', 'amount (dr)', 'dr', 'withdrawn', 'paid', 'amount paid', 'spent'];
 const CREDIT_COLS = ['credit', 'credit amount', 'amount (cr)', 'cr', 'deposited', 'received', 'amount received', 'refund'];
 const AMOUNT_COLS = ['amount', 'txn amount', 'transaction amount', 'total amount'];
@@ -56,20 +57,38 @@ function parseAmount(val: string | undefined | null): number | null {
   return isNaN(num) ? null : Math.abs(num);
 }
 
-function detectProvider(content: string, filename?: string): string {
-  const lower = content.toLowerCase();
+// ── Strict Source Detection ───────────────────────────────────────────────────
+// NEVER assume Google Pay/PhonePe/Paytm unless document header or filename explicitly states it.
+// NEVER scan individual transactions, UPI IDs, or merchant names to infer document provider!
+function detectProvider(fullText: string, filename?: string): string {
   const fileLower = (filename || '').toLowerCase();
 
-  if (lower.includes('google pay') || lower.includes('gpay') || fileLower.includes('gpay') || fileLower.includes('googlepay')) return 'Google Pay';
-  if (lower.includes('phonepe') || fileLower.includes('phonepe')) return 'PhonePe';
-  if (lower.includes('paytm') || fileLower.includes('paytm')) return 'Paytm';
-  if (lower.includes('bhim') || fileLower.includes('bhim')) return 'BHIM';
-  if (lower.includes('amazon pay') || fileLower.includes('amazonpay')) return 'Amazon Pay';
-  if (lower.includes('mobikwik') || fileLower.includes('mobikwik')) return 'MobiKwik';
-  if (lower.includes('freecharge') || fileLower.includes('freecharge')) return 'FreeCharge';
-  if (lower.includes('upi') || lower.includes('inward upi') || lower.includes('outward upi')) return 'UPI Statement';
+  // 1. Check filename for explicit provider name
+  if (fileLower.includes('phonepe')) return 'PhonePe';
+  if (fileLower.includes('paytm')) return 'Paytm';
+  if (fileLower.includes('gpay') || fileLower.includes('googlepay') || fileLower.includes('google_pay')) return 'Google Pay';
+  if (fileLower.includes('bhim')) return 'BHIM';
+  if (fileLower.includes('amazonpay') || fileLower.includes('amazon_pay')) return 'Amazon Pay';
+  if (fileLower.includes('mobikwik')) return 'MobiKwik';
+  if (fileLower.includes('freecharge')) return 'FreeCharge';
 
-  return 'Wallet';
+  // 2. Check ONLY document header / first 15 lines (document-level title/branding)
+  const lines = fullText.split(/\r?\n/).slice(0, 15);
+  const headerText = lines.join(' ').toLowerCase();
+
+  if (headerText.includes('paytm payments bank') || headerText.includes('paytm passbook') || headerText.includes('paytm wallet') || headerText.includes('one97 communications')) return 'Paytm';
+  if (headerText.includes('phonepe private limited') || headerText.includes('phonepe transaction history')) return 'PhonePe';
+  if (headerText.includes('google pay transaction') || headerText.includes('google india digital services') || headerText.includes('gpay statement')) return 'Google Pay';
+  if (headerText.includes('bhim upi statement') || headerText.includes('npci bhim')) return 'BHIM';
+  if (headerText.includes('amazon pay balance') || headerText.includes('amazon pay statement')) return 'Amazon Pay';
+
+  // Explicit title word check in document header
+  if (/\bpaytm\b/i.test(headerText) && !headerText.includes('via paytm') && !headerText.includes('to paytm')) return 'Paytm';
+  if (/\bphonepe\b/i.test(headerText) && !headerText.includes('via phonepe') && !headerText.includes('to phonepe')) return 'PhonePe';
+  if (/\bgoogle pay\b/i.test(headerText) && !headerText.includes('via google pay') && !headerText.includes('to google pay')) return 'Google Pay';
+
+  // 3. Default to "Unknown / Not specified" (NEVER default to Google Pay!)
+  return 'Unknown / Not specified';
 }
 
 // ── CSV Parser ────────────────────────────────────────────────────────────────
@@ -304,7 +323,6 @@ function extractUPIReference(str: string): string | null {
   return null;
 }
 
-// Helper: Filter non-amount numbers (dates, times, UPI IDs, account numbers)
 function extractValidAmounts(text: string, dateStr?: string | null): number[] {
   let cleanedText = text;
   if (dateStr) {
@@ -314,7 +332,6 @@ function extractValidAmounts(text: string, dateStr?: string | null): number[] {
     cleanedText = cleanedText.replace(new RegExp(re.source, 'gi'), '');
   }
   cleanedText = cleanedText.replace(TIME_RE, '');
-  // Strip out alphanumeric reference IDs (e.g. ACH9876543, SWG554433, APB1234567, UPI/6952387830)
   cleanedText = cleanedText.replace(/\b[A-Za-z0-9\/_-]{6,}\b/gi, '');
 
   const amtMatches = cleanedText.match(/(?:[₹\u20B9$£Rs]\s*)?\b(?:\d{1,3}(?:,\d{3})+|\d+)\.\d{1,2}\b|(?:[₹\u20B9$£Rs]\s*)?\b(?:\d{1,3}(?:,\d{3})+)\b|(?:[₹\u20B9$£Rs]\s*)\b(?:\d{1,3}(?:,\d{3})*|\d+)\b/g) || [];
@@ -332,7 +349,152 @@ function extractValidAmounts(text: string, dateStr?: string | null): number[] {
   return validAmts;
 }
 
-// ── Strategy 1: Dynamic Card / Multiline UPI Block Parser (Google Pay / GPay PDF) ──
+// ── Strategy 1: Structure-Aware Table Column Parser (Paytm Passbook / Column PDFs) ──
+// Supports layout: Date & Time → Transaction Details → Notes & Tags → Your Account → Amount
+function parseCoordinateTable(items: any[]): ParsedWalletTransaction[] {
+  const txns: ParsedWalletTransaction[] = [];
+  if (!items || items.length === 0) return txns;
+
+  const pageMap = new Map<number, any[]>();
+  for (const item of items) {
+    const p = item.page || 1;
+    if (!pageMap.has(p)) pageMap.set(p, []);
+    pageMap.get(p)!.push(item);
+  }
+
+  for (const [_, pageItems] of pageMap) {
+    pageItems.sort((a, b) => b.y - a.y || a.x - b.x);
+
+    const yMap = new Map<number, any[]>();
+    for (const item of pageItems) {
+      let matchedY: number | null = null;
+      for (const yKey of yMap.keys()) {
+        if (Math.abs(yKey - item.y) <= 6) { matchedY = yKey; break; }
+      }
+      if (matchedY !== null) yMap.get(matchedY)!.push(item);
+      else yMap.set(item.y, [item]);
+    }
+
+    const ys = Array.from(yMap.keys()).sort((a, b) => b - a);
+
+    let headerY: number | null = null;
+    let colBounds = {
+      dateX: 0,
+      detailsX: 120,
+      notesX: 280,
+      accountX: 400,
+      amountX: 500,
+    };
+
+    for (const y of ys) {
+      const lineStr = yMap.get(y)!.map(it => it.str).join(' ').toLowerCase();
+      if ((lineStr.includes('date') || lineStr.includes('time')) && (lineStr.includes('detail') || lineStr.includes('particulars') || lineStr.includes('amount') || lineStr.includes('account'))) {
+        headerY = y;
+        for (const it of yMap.get(y)!) {
+          const w = it.str.toLowerCase();
+          if (w.includes('date') || w.includes('time')) colBounds.dateX = it.x;
+          else if (w.includes('detail') || w.includes('particular')) colBounds.detailsX = it.x;
+          else if (w.includes('note') || w.includes('tag')) colBounds.notesX = it.x;
+          else if (w.includes('account') || w.includes('source')) colBounds.accountX = it.x;
+          else if (w.includes('amount')) colBounds.amountX = it.x;
+        }
+        break;
+      }
+    }
+
+    let activeRow: {
+      dateStr: string;
+      timeStr: string | null;
+      details: string[];
+      notes: string[];
+      account: string[];
+      amounts: string[];
+      rawLines: string[];
+    } | null = null;
+
+    const finalizeRow = (r: typeof activeRow) => {
+      if (!r) return;
+      const fullText = r.rawLines.join(' ');
+      const validAmts = extractValidAmounts(r.amounts.join(' ') || fullText, r.dateStr);
+
+      if (validAmts.length === 0) return;
+      const amount = validAmts[0];
+
+      const descText = r.details.join(' ') || fullText;
+      const notesText = r.notes.join(' ');
+      const upiRef = extractUPIReference(descText + ' ' + notesText) || extractUPIReference(fullText);
+
+      let isDebit: boolean | null = null;
+      const amtStr = r.amounts.join(' ') || fullText;
+      if (amtStr.includes('+') || /\b(cr|credit|received|added)\b/i.test(amtStr + ' ' + descText)) {
+        isDebit = false;
+      } else if (amtStr.includes('-') || /\b(dr|debit|paid|spent|transferred)\b/i.test(amtStr + ' ' + descText)) {
+        isDebit = true;
+      } else {
+        if (/\b(paid|to|sent)\b/i.test(descText)) isDebit = true;
+        else if (/\b(received|from|refund)\b/i.test(descText)) isDebit = false;
+      }
+
+      txns.push({
+        date: r.dateStr,
+        time: r.timeStr || undefined,
+        description: descText.trim() || 'Wallet Transaction',
+        rawNarration: fullText,
+        debit: isDebit !== false ? amount : null,
+        credit: isDebit === false ? amount : null,
+        balance: null,
+        referenceId: upiRef,
+      });
+    };
+
+    for (const y of ys) {
+      if (headerY !== null && y >= headerY) continue;
+
+      const lineItems = yMap.get(y)!.sort((a, b) => a.x - b.x);
+      const lineStr = lineItems.map(it => it.str).join(' ');
+
+      if (!lineStr || lineStr.length < 2) continue;
+      if (/total|balance|page\s*\d|opening|closing/i.test(lineStr)) continue;
+
+      const { dateStr, timeStr } = extractDateTime(lineStr);
+
+      if (dateStr) {
+        if (activeRow) finalizeRow(activeRow);
+
+        activeRow = {
+          dateStr,
+          timeStr,
+          details: [],
+          notes: [],
+          account: [],
+          amounts: [],
+          rawLines: [lineStr],
+        };
+
+        for (const it of lineItems) {
+          if (it.x >= colBounds.amountX - 30) activeRow.amounts.push(it.str);
+          else if (it.x >= colBounds.accountX - 30) activeRow.account.push(it.str);
+          else if (it.x >= colBounds.notesX - 30) activeRow.notes.push(it.str);
+          else if (it.x >= colBounds.detailsX - 30) activeRow.details.push(it.str);
+        }
+      } else if (activeRow) {
+        activeRow.rawLines.push(lineStr);
+        for (const it of lineItems) {
+          if (it.x >= colBounds.amountX - 30) activeRow.amounts.push(it.str);
+          else if (it.x >= colBounds.accountX - 30) activeRow.account.push(it.str);
+          else if (it.x >= colBounds.notesX - 30) activeRow.notes.push(it.str);
+          else if (it.x >= colBounds.detailsX - 30) activeRow.details.push(it.str);
+        }
+      }
+    }
+
+    if (activeRow) finalizeRow(activeRow);
+  }
+
+  return txns;
+}
+
+// ── Strategy 2: Multiline Card Block Parser (Google Pay / GPay PDF) ──────────────────
 function parseCardBlocks(lines: string[]): ParsedWalletTransaction[] {
   const txns: ParsedWalletTransaction[] = [];
 
@@ -358,7 +520,6 @@ function parseCardBlocks(lines: string[]): ParsedWalletTransaction[] {
     }
 
     const blockText = blockLines.join(' ');
-    // Ignore header/footer summary blocks (Total Credits/Debits/Balance)
     if (/total\s+(credits|debits)|closing\s+balance|opening\s+balance|account\s+summary/i.test(blockText)) {
       i = j;
       continue;
@@ -422,13 +583,11 @@ function parseCardBlocks(lines: string[]): ParsedWalletTransaction[] {
   return txns;
 }
 
-
-// ── Strategy 2: Dynamic Row / Table UPI Statement Parser (PhonePe / Paytm / Bank) ──
+// ── Strategy 3: Dynamic Row / Table UPI Statement Parser (PhonePe / Bank) ───────────
 function parseTableRows(lines: string[]): ParsedWalletTransaction[] {
   const txns: ParsedWalletTransaction[] = [];
   const fullText = lines.join('\n');
 
-  // Regex pattern for statement rows: Date [Time] [Description] [Dr/Cr or Paid/Received] Amount
   const rowPattern = /([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4}|\d{1,2}\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\w*\s+\d{2,4})\s+([^\n]+?)\s+(?:(Dr|Cr|Paid|Received|Debited|Credited)\s+)?(?:[₹\u20B9Rs]\s*)?([\d,]+(?:\.\d{1,2})?)/gi;
 
   let match;
@@ -440,8 +599,6 @@ function parseTableRows(lines: string[]): ParsedWalletTransaction[] {
     const amount = parseFloat(amountStr);
 
     if (isNaN(amount) || amount <= 0) continue;
-
-    // Ignore header lines or totals
     if (/total|balance|opening|closing/i.test(desc)) continue;
 
     const timeStr = extractDateTime(desc).timeStr;
@@ -472,7 +629,7 @@ function parseTableRows(lines: string[]): ParsedWalletTransaction[] {
   return txns;
 }
 
-// ── Strategy 3: Sliding Window Fallback Parser (Universal Any UPI PDF) ────────
+// ── Strategy 4: Sliding Window Fallback Parser (Universal Any UPI PDF) ────────
 function parseSlidingWindow(lines: string[]): ParsedWalletTransaction[] {
   const txns: ParsedWalletTransaction[] = [];
   let pendingTx: { dateStr: string; lines: string[] } | null = null;
@@ -482,22 +639,9 @@ function parseSlidingWindow(lines: string[]): ParsedWalletTransaction[] {
     const blockText = pt.lines.join(' ').replace(/\s+/g, ' ').trim();
     if (blockText.length < 5) return;
 
-    // Must contain an amount
-    const amtMatches = blockText.match(/(?:[₹\u20B9$£Rs]\s*)?(\d{1,3}(?:,\d{3})*|\d+)(?:\.\d{1,2})?/g) || [];
-    let amount: number | null = null;
-
-    for (const rawAmt of amtMatches) {
-      const cleaned = rawAmt.replace(/[₹\u20B9$£Rs,\s]/g, '');
-      if (/^\d{4}$/.test(cleaned) && parseInt(cleaned) >= 2020 && parseInt(cleaned) <= 2030) continue;
-      if (/^\d{8,}$/.test(cleaned)) continue;
-      const num = parseFloat(cleaned);
-      if (!isNaN(num) && num > 0) {
-        amount = num;
-        break;
-      }
-    }
-
-    if (!amount) return;
+    const validAmts = extractValidAmounts(blockText, pt.dateStr);
+    if (validAmts.length === 0) return;
+    const amount = validAmts[0];
 
     const upiRef = extractUPIReference(blockText);
     const timeStr = extractDateTime(blockText).timeStr;
@@ -506,7 +650,6 @@ function parseSlidingWindow(lines: string[]): ParsedWalletTransaction[] {
     if (/\b(to|paid|debited|dr|outward|sent|withdrawn)\b/i.test(blockText)) isDebit = true;
     else if (/\b(from|received|credited|cr|inward|refund|cashback)\b/i.test(blockText)) isDebit = false;
 
-    // Filter out date string from description
     const desc = blockText.replace(pt.dateStr, '').replace(TIME_RE, '').trim();
 
     txns.push({
@@ -546,44 +689,53 @@ export async function parseWalletPDF(
 ): Promise<WalletParseResult> {
   const warnings: string[] = [];
   const transactions: ParsedWalletTransaction[] = [];
-  let provider = 'Wallet';
+  let provider = 'Unknown / Not specified';
 
   try {
     console.log('[FINOVA Universal PDF] Extracting text from PDF via unpdf, buffer length:', buffer.length);
-    const { text: allText, pages } = await extractTextFromPDF(buffer);
+    const { text: allText, pages, items } = await extractTextFromPDF(buffer);
     const allLines = pages.flat();
 
     console.log('[FINOVA Universal PDF] Extracted', allText.length, 'chars across', pages.length, 'page(s) and', allLines.length, 'lines');
 
+    // Strict document-level provider detection (NEVER defaults to Google Pay!)
     provider = detectProvider(allText, filename);
     console.log('[FINOVA Universal PDF] Detected provider:', provider);
 
-    // ── Universal Multi-Strategy Extraction ─────────────────────────────────
+    // ── Universal Multi-Strategy Structural Extraction ─────────────────────
 
-    // Strategy 1: Card/Multiline Block Parser (Google Pay / GPay PDF)
-    let parsed = parseCardBlocks(allLines);
+    // Strategy 1: Structure-Aware Coordinate Table Parser (Paytm Passbook / Column PDFs)
+    let parsed = parseCoordinateTable(items);
     if (parsed.length > 0) {
-      console.log('[FINOVA Universal PDF] Strategy 1 (Card/Block Parser) succeeded:', parsed.length, 'transactions');
+      console.log('[FINOVA Universal PDF] Strategy 1 (Structure Coordinate Table Parser) succeeded:', parsed.length, 'transactions');
     }
 
-    // Strategy 2: Row/Table Parser (PhonePe / Paytm / Bank UPI statements)
+    // Strategy 2: Multiline Card Block Parser (Google Pay / GPay PDF)
+    if (parsed.length === 0) {
+      parsed = parseCardBlocks(allLines);
+      if (parsed.length > 0) {
+        console.log('[FINOVA Universal PDF] Strategy 2 (Multiline Card Block Parser) succeeded:', parsed.length, 'transactions');
+      }
+    }
+
+    // Strategy 3: Dynamic Row/Table Regex Parser (PhonePe / Bank UPI statements)
     if (parsed.length === 0) {
       parsed = parseTableRows(allLines);
       if (parsed.length > 0) {
-        console.log('[FINOVA Universal PDF] Strategy 2 (Row/Table Parser) succeeded:', parsed.length, 'transactions');
+        console.log('[FINOVA Universal PDF] Strategy 3 (Dynamic Row Parser) succeeded:', parsed.length, 'transactions');
       }
     }
 
-    // Strategy 3: Sliding Window Scanner (Fallback for any UPI layout)
+    // Strategy 4: Sliding Window Scanner (Fallback for any UPI layout)
     if (parsed.length === 0) {
       parsed = parseSlidingWindow(allLines);
       if (parsed.length > 0) {
-        console.log('[FINOVA Universal PDF] Strategy 3 (Sliding Window Fallback) succeeded:', parsed.length, 'transactions');
+        console.log('[FINOVA Universal PDF] Strategy 4 (Sliding Window Fallback) succeeded:', parsed.length, 'transactions');
       }
     }
 
     if (parsed.length === 0) {
-      warnings.push(`Could not extract transactions from this ${provider} PDF.`);
+      warnings.push(`Could not extract transactions from this PDF.`);
       warnings.push(`[DEBUG Preview] First 15 lines: ${allLines.slice(0, 15).join(' | ')}`);
     } else {
       transactions.push(...parsed);
