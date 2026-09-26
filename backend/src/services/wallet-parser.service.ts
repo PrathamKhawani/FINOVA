@@ -68,7 +68,7 @@ function detectProvider(fullText: string, filename?: string): string {
 
   if (headerText.includes('paytm payments bank') || headerText.includes('paytm passbook') || headerText.includes('paytm wallet') || headerText.includes('one97 communications') || headerText.includes('paytm')) return 'Paytm';
   if (headerText.includes('phonepe private limited') || headerText.includes('phonepe transaction history') || headerText.includes('phonepe')) return 'PhonePe';
-  if (headerText.includes('google pay transaction') || headerText.includes('google india digital services') || headerText.includes('gpay statement') || headerText.includes('google pay')) return 'Google Pay';
+  if (headerText.includes('google pay') || headerText.includes('google india digital services') || headerText.includes('gpay statement') || (headerText.includes('transaction statement') && fullText.toLowerCase().includes('google pay'))) return 'Google Pay';
   if (headerText.includes('bhim upi statement') || headerText.includes('npci bhim') || headerText.includes('bhim')) return 'BHIM';
   if (headerText.includes('amazon pay balance') || headerText.includes('amazon pay statement') || headerText.includes('amazon pay')) return 'Amazon Pay';
 
@@ -275,12 +275,12 @@ async function extractTextFromPDF(buffer: Buffer): Promise<{ text: string; pages
 
 // ── Date & Time Utilities ─────────────────────────────────────────────────────
 const DATE_ANCHOR_RES = [
-  // Full dates: "27/03/2025", "27-03-2025", "01/12/25", "Oct 5, 2024", "5 Oct 2024"
+  // Full dates: "27/03/2025", "27-03-2025", "01/12/25", "Oct 5, 2024", "5 Oct 2024", "02 Aug, 2026"
   /\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b/,
   /\b\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}\b/,
-  /\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{2,4}\b/i,
+  /\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?),?\s+\d{2,4}\b/i,
   /\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s+\d{2,4}\b/i,
-  // Date without year: "27 Mar", "27 March", "27-Mar"
+  // Date without year: "27 Mar", "27 March", "27-Mar", "02 Aug"
   /\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b/i,
 ];
 
@@ -351,26 +351,50 @@ function parseTransactionBlocks(lines: string[], statementYear: string | null): 
 
     if (!dateAnchor) { i++; continue; }
 
+    // Start a transaction block
     const blockLines: string[] = [line];
     let j = i + 1;
 
-    while (j < lines.length && j < i + 12) {
+    while (j < lines.length) {
       const nextLine = lines[j].trim();
       if (!nextLine) { j++; continue; }
 
+      // Check if next line starts a new transaction (has a Date Anchor)
       const nextDate = extractDateAnchor(nextLine);
-      if (nextDate && nextLine !== line) break;
+      if (nextDate) {
+        // Exception: if current block doesn't have an amount or UPI ID yet, check if nextLine is just a continuation, but usually a DateAnchor marks a new transaction.
+        break;
+      }
 
-      if (/page\s*\d|closing\s*balance|opening\s*balance|total\s+(credits|debits)|statement\s*summary/i.test(nextLine)) {
+      if (/page\s*\d\s*of\s*\d|closing\s*balance|opening\s*balance|total\s+(credits|debits)|statement\s*summary/i.test(nextLine)) {
+        break;
+      }
+
+      // Check for Google Pay / statement footer text that belongs to document end or disclaimer
+      if (/^Note:\s*This\s*statement\s*reflects/i.test(nextLine)) {
         break;
       }
 
       blockLines.push(nextLine);
       j++;
+
+      // Stop block if we've accumulated enough lines (Google Pay txns are typically 3-4 lines)
+      if (blockLines.length >= 6) {
+        // If we already have amount, time, and ref ID, we can safely break unless next line is account info
+        const blockTextTemp = blockLines.join(' ');
+        if (extractValidAmounts(blockTextTemp, dateAnchor).length > 0 && extractUPIReference(blockTextTemp) && /(Paid by|Paid to|Received from|Account|Bank)/i.test(blockTextTemp)) {
+          break;
+        }
+      }
     }
 
     const blockText = blockLines.join(' ');
-    if (/closing\s*balance|opening\s*balance|total\s+(credits|debits)|account\s*summary/i.test(blockText)) {
+    if (/closing\s*balance|opening\s*balance|total\s+(credits|debits)|account\s*summary|statement\s*period|transaction\s*statement\s*period/i.test(blockText)) {
+      i = j;
+      continue;
+    }
+    // Skip header lines like "01 August 2026 - 31 August 2026 ₹25,568.45 ₹26,776"
+    if (/\b\d{1,2}\s+[A-Za-z]+\s+\d{4}\s*-\s*\d{1,2}\s+[A-Za-z]+\s+\d{4}\b/i.test(blockText)) {
       i = j;
       continue;
     }
@@ -385,23 +409,26 @@ function parseTransactionBlocks(lines: string[], statementYear: string | null): 
     const validAmts = extractValidAmounts(blockText, dateAnchor);
 
     if (validAmts.length === 0) { i = j; continue; }
+    // Transaction amount is usually the amount line value
     const amount = validAmts[0];
 
-    // Determine direction (+ / - or Dr / Cr or Paid / Received)
+    // Determine direction (+ / - or Dr / Cr or Paid to vs Received from / Paid by vs Paid to)
     let isDebit: boolean | null = null;
-    if (/[\-]\s*(?:[₹\u20B9$£Rs]\s*)?\d+/i.test(blockText) || /\b(paid|spent|debited|sent|to|withdrawn|dr)\b/i.test(blockText)) {
-      isDebit = true;
-    } else if (/[+]\s*(?:[₹\u20B9$£Rs]\s*)?\d+/i.test(blockText) || /\b(received|credited|added|from|refund|cashback|cr)\b/i.test(blockText)) {
+    if (/\bReceived\s+from\b/i.test(blockText) || /\bCredited\b/i.test(blockText) || /[+]\s*(?:[₹\u20B9$£Rs]\s*)?\d+/i.test(blockText) || /\/CR\//i.test(blockText) || (/\bCR\b/i.test(blockText) && !/\b\d+[\.,]\d+\s+Cr\b/i.test(blockText))) {
       isDebit = false;
+    } else if (/\bPaid\s+to\b/i.test(blockText) || /\bSent\s+to\b/i.test(blockText) || /\bDebited\b/i.test(blockText) || /[\-]\s*(?:[₹\u20B9$£Rs]\s*)?\d+/i.test(blockText) || /\/DR\//i.test(blockText) || /\bDR\b/i.test(blockText)) {
+      isDebit = true;
     }
 
-    // Extract Details / Description / Merchant
+    // Extract Details / Description / Merchant / Counterparty
     let description = '';
-    const toMatch = blockText.match(/(?:To|Paid to|Sent to|Transfer to|Payment to)\s+([^₹\d\n|]+)/i);
-    const fromMatch = blockText.match(/(?:From|Received from|Paid by|Transfer from|Refund from)\s+([^₹\d\n|]+)/i);
+    const paidToMatch = blockText.match(/\bPaid\s+to\s+([^₹\d\n|]+?)(?=\s*(?:₹|\d{4,}|UPI|Paid\s+by|Paid\s+to|Note:|$))/i);
+    const receivedFromMatch = blockText.match(/\bReceived\s+from\s+([^₹\d\n|]+?)(?=\s*(?:₹|\d{4,}|UPI|Paid\s+by|Paid\s+to|Note:|$))/i);
+    const sentToMatch = blockText.match(/\bSent\s+to\s+([^₹\d\n|]+?)(?=\s*(?:₹|\d{4,}|UPI|Paid\s+by|Paid\s+to|Note:|$))/i);
 
-    if (toMatch) description = toMatch[1].trim();
-    else if (fromMatch) description = fromMatch[1].trim();
+    if (receivedFromMatch) description = receivedFromMatch[1].trim();
+    else if (paidToMatch) description = paidToMatch[1].trim();
+    else if (sentToMatch) description = sentToMatch[1].trim();
     else {
       for (const bl of blockLines) {
         if (bl.includes(dateAnchor)) continue;
@@ -413,10 +440,24 @@ function parseTransactionBlocks(lines: string[], statementYear: string | null): 
       }
     }
 
-    // Extract Account / Source Instrument (e.g., Kotak Mahindra Bank - 13, Paytm Wallet)
+    // Clean up description trailing keywords
+    description = description.replace(/\s*(?:UPI|Transaction|ID|Paid|Received|by|to|from).*$/i, '').trim();
+
+    // Extract Account / Source Instrument (e.g., Surat People Cooperative Bank 1094, Kotak Bank)
     let accountStr = '';
-    const accMatch = blockText.match(/\b([A-Za-z\s]+Bank\s*(?:-\s*\d+)?|Paytm\s*Wallet|Google\s*Pay|PhonePe\s*Wallet)\b/i);
-    if (accMatch) accountStr = accMatch[0];
+    // For Received transactions, the account line says "Paid to <Bank Name> <AccNo>"
+    // For Paid transactions, the account line says "Paid by <Bank Name> <AccNo>"
+    const accPaidByMatch = blockText.match(/\bPaid\s+by\s+([A-Za-z0-9\s]+?\d{2,6})\b/i);
+    const accPaidToMatch = blockText.match(/\bPaid\s+to\s+([A-Za-z0-9\s]+?\d{2,6})\b/i);
+
+    if (accPaidByMatch) {
+      accountStr = accPaidByMatch[1].trim();
+    } else if (isDebit === false && accPaidToMatch) {
+      accountStr = accPaidToMatch[1].trim();
+    } else {
+      const genericBank = blockText.match(/\b([A-Za-z\s]+Bank\s*(?:-\s*\d+)?|Paytm\s*Wallet|Google\s*Pay|PhonePe\s*Wallet)\b/i);
+      if (genericBank) accountStr = genericBank[0].trim();
+    }
 
     const upiRef = extractUPIReference(blockText);
 
@@ -430,7 +471,7 @@ function parseTransactionBlocks(lines: string[], statementYear: string | null): 
     txns.push({
       date: dateStr,
       time: timeStr || undefined,
-      description: description.trim() || 'Wallet Transaction',
+      description: description || 'Wallet Transaction',
       rawNarration,
       debit: (isDebit !== false && !failed) ? amount : null,
       credit: (isDebit === false && !failed) ? amount : null,
@@ -490,3 +531,4 @@ export async function parseWalletPDF(
 
   return { provider, transactions, warnings };
 }
+
