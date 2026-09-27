@@ -26,35 +26,65 @@ export const upload = multer({
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
 });
 
-// ── Helper: parse date string to Date ─────────────────────────────────────────
-const parseDate = (dateStr: string): Date => {
-  const formats: Array<{ regex: RegExp; handler: (m: RegExpMatchArray) => Date }> = [
-    { regex: /^(\d{1,2})\/(\d{1,2})\/(\d{2})$/, handler: (m) => new Date(`20${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}T12:00:00Z`) },
-    { regex: /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/, handler: (m) => new Date(`${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}T12:00:00Z`) },
-    { regex: /^(\d{1,2})-(\d{1,2})-(\d{4})$/, handler: (m) => new Date(`${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}T12:00:00Z`) },
-    { regex: /^(\d{4})-(\d{1,2})-(\d{1,2})$/, handler: (m) => new Date(`${m[0]}T12:00:00Z`) },
-    // DD Mon YYYY  e.g. "5 Oct 2024"
-    { regex: /^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})$/, handler: (m) => new Date(`${m[1]} ${m[2]} ${m[3]} 12:00:00 UTC`) },
-    // Mon DD, YYYY or Mon DD YYYY  e.g. "Oct 5, 2024" (Google Pay format)
-    { regex: /^([A-Za-z]{3,9})\s+(\d{1,2}),?\s+(\d{4})$/, handler: (m) => new Date(`${m[2]} ${m[1]} ${m[3]} 12:00:00 UTC`) },
-    // Month DD, YYYY  e.g. "October 5, 2024" (long Google Pay format)
-    { regex: /^([A-Za-z]{4,9})\s+(\d{1,2}),?\s+(\d{4})$/, handler: (m) => new Date(`${m[2]} ${m[1]} ${m[3]} 12:00:00 UTC`) },
-    // DD Mon without year — log warning and derive from current context
-    { regex: /^(\d{1,2})\s+([A-Za-z]{3,9})$/, handler: (m) => {
-      const year = new Date().getFullYear();
-      console.warn(`[FINOVA parseDate] Warning: Date "${m[0]}" has no year. Preserving derived chronology.`);
-      return new Date(`${m[1]} ${m[2]} ${year} 12:00:00 UTC`);
-    }},
-  ];
-  for (const { regex, handler } of formats) {
-    const match = dateStr.trim().match(regex);
-    if (match) {
-      const d = handler(match);
-      if (!isNaN(d.getTime())) return d;
-    }
+// ── Helper: parse date string to Date (NEVER uses current year as fallback) ───
+// Returns null for unrecognised/ambiguous dates — never silently fabricates a date.
+const MONTH_MAP: Record<string, string> = {
+  january: '01', jan: '01',
+  february: '02', feb: '02',
+  march: '03', mar: '03',
+  april: '04', apr: '04',
+  may: '05',
+  june: '06', jun: '06',
+  july: '07', jul: '07',
+  august: '08', aug: '08',
+  september: '09', sep: '09', sept: '09',
+  october: '10', oct: '10',
+  november: '11', nov: '11',
+  december: '12', dec: '12',
+};
+
+function parseDateSafe(dateStr: string): Date | null {
+  const s = dateStr.trim();
+
+  // DD/MM/YYYY or DD-MM-YYYY or DD.MM.YYYY
+  let m = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})$/);
+  if (m) return new Date(`${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}T12:00:00Z`);
+
+  // DD/MM/YY
+  m = s.match(/^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2})$/);
+  if (m) return new Date(`20${m[3]}-${m[2].padStart(2,'0')}-${m[1].padStart(2,'0')}T12:00:00Z`);
+
+  // YYYY-MM-DD or YYYY/MM/DD
+  m = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+  if (m) return new Date(`${m[1]}-${m[2].padStart(2,'0')}-${m[3].padStart(2,'0')}T12:00:00Z`);
+
+  // DD Mon YYYY or DD-Mon-YYYY e.g. "5 Oct 2024", "02 Aug 2026"
+  m = s.match(/^(\d{1,2})\s*[-]?\s*([A-Za-z]{3,9}),?\s*(\d{4})$/);
+  if (m) {
+    const mon = MONTH_MAP[(m[2] || '').toLowerCase()];
+    if (mon) return new Date(`${m[3]}-${mon}-${m[1].padStart(2,'0')}T12:00:00Z`);
   }
-  console.warn(`[FINOVA parseDate] Unrecognised date string: "${dateStr}" — defaulting to UTC now`);
-  return new Date();
+
+  // Mon DD, YYYY or Mon DD YYYY e.g. "Oct 5, 2024"
+  m = s.match(/^([A-Za-z]{3,9})\s+(\d{1,2}),?\s*(\d{4})$/);
+  if (m) {
+    const mon = MONTH_MAP[(m[1] || '').toLowerCase()];
+    if (mon) return new Date(`${m[3]}-${mon}-${m[2].padStart(2,'0')}T12:00:00Z`);
+  }
+
+  // Try native Date parsing as last resort (e.g. "October 5, 2024")
+  const native = new Date(s);
+  if (!isNaN(native.getTime()) && native.getFullYear() > 2000) return native;
+
+  return null; // Unknown — do NOT fall back to current year
+}
+
+const parseDate = (dateStr: string): Date => {
+  const parsed = parseDateSafe(dateStr);
+  if (parsed) return parsed;
+  // Date could not be parsed — log and use epoch so it's obviously wrong in the UI
+  console.warn(`[FINOVA parseDate] Unrecognised date string: "${dateStr}" — storing as 1970-01-01 epoch (needsReview will be set to true)`);
+  return new Date(0); // Unix epoch — clearly invalid, triggers needsReview
 };
 
 
@@ -165,26 +195,31 @@ export const uploadStatement = async (req: AuthRequest, res: Response): Promise<
       if (isCredit && isIncomeCategory(catResult.category)) totalCredits += amount;
       if (!isCredit && isExpenseCategory(catResult.category)) totalDebits += amount;
 
+      // Parse date — if unrecognised, returns epoch (1970) and flags needsReview
+      const parsedDate = parseDate(raw.date);
+      const dateUnrecognised = parsedDate.getTime() === 0;
+
       return {
-        date: parseDate(raw.date),
+        date: parsedDate,
         description: raw.description,
         rawNarration,
         merchantName: catResult.merchantName,
         counterparty: catResult.counterparty,
-        channel: catResult.channel,
+        // paymentChannel (HOW) ≠ statementSource (WHERE)
+        channel: catResult.channel || null,          // UPI/NEFT/IMPS/Card etc.
         amount,
         debit: raw.debit,
         credit: raw.credit,
         type: isCredit ? 'credit' : 'debit',
         transactionType: (catResult as any).transactionType || (isCredit ? 'Income' : 'Expense'),
-        source: 'BANK',
-        provider: bankName,
+        source: 'BANK',                               // statementSource: WHERE it came from
+        provider: bankName,                           // which bank/wallet
         category: catResult.category,
         subcategory: catResult.subcategory,
         confidence: catResult.confidence,
         referenceId: catResult.referenceId,
         balance: raw.balance,
-        needsReview: catResult.needsReview,
+        needsReview: catResult.needsReview || dateUnrecognised,
         classificationReason: (catResult as any).classificationReason,
         entityType: (catResult as any).entityType,
         businessType: (catResult as any).businessType,
@@ -192,6 +227,12 @@ export const uploadStatement = async (req: AuthRequest, res: Response): Promise<
         parentCompany: (catResult as any).parentCompany,
         extractedVPA: (catResult as any).extractedVPA,
         matchedAlias: (catResult as any).matchedAlias,
+        // New verbatim fields from parsed statement
+        time: raw.time || null,
+        upiId: raw.upiId || null,
+        orderId: raw.orderId || null,
+        notes: raw.notes || null,
+        linkedAccount: raw.linkedAccount || null,
       };
     });
 
@@ -302,32 +343,45 @@ export const uploadWalletStatement = async (req: AuthRequest, res: Response): Pr
       if (isCredit && isIncomeCategory(catResult.category)) totalCredits += amount;
       if (!isCredit && isExpenseCategory(catResult.category)) totalDebits += amount;
 
+      // Parse date — if unrecognised, returns epoch (1970) and flags needsReview
+      const parsedDate = parseDate(raw.date);
+      const dateUnrecognised = parsedDate.getTime() === 0;
+
+      // paymentChannel from the wallet's own data (UPI/NEFT etc.) — not the provider name
+      const paymentChannel = raw.paymentChannel || catResult.channel || null;
+
       return {
-        date: parseDate(raw.date),
+        date: parsedDate,
         description: raw.description,
         rawNarration,
         merchantName: catResult.merchantName,
         counterparty: catResult.counterparty,
-        channel: catResult.channel || provider,
+        channel: paymentChannel,                      // HOW money moved (UPI/NEFT/Card)
         amount,
         debit: raw.debit,
         credit: raw.credit,
         type: isCredit ? 'credit' : 'debit',
         transactionType: (catResult as any).transactionType || (isCredit ? 'Income' : 'Expense'),
-        source: 'WALLET',
-        provider,
+        source: 'WALLET',                             // WHERE statement came from
+        provider,                                     // which wallet (Paytm/PhonePe etc.)
         category: catResult.category,
         subcategory: catResult.subcategory,
         confidence: catResult.confidence,
-        referenceId: catResult.referenceId,
+        referenceId: raw.referenceId || catResult.referenceId,
         balance: raw.balance,
-        needsReview: catResult.needsReview,
+        needsReview: catResult.needsReview || dateUnrecognised,
         entityType: (catResult as any).entityType,
         businessType: (catResult as any).businessType,
         legalName: (catResult as any).legalName,
         parentCompany: (catResult as any).parentCompany,
         extractedVPA: (catResult as any).extractedVPA,
         matchedAlias: (catResult as any).matchedAlias,
+        // New verbatim fields preserved from the wallet statement
+        time: raw.time || null,
+        upiId: raw.upiId || (catResult as any).extractedVPA || null,
+        orderId: raw.orderId || null,
+        notes: raw.notes || null,
+        linkedAccount: raw.linkedAccount || raw.account || null,
       };
     });
 

@@ -2046,8 +2046,6 @@ export const ENTITY_KB: EntityEntry[] = [
   ...GOVERNMENT,
   // Insurance before generic bank/finance (prevent misclassification)
   ...INSURANCE,
-  // Banks & Financial Institutions
-  ...BANKS,
   // Food & Dining
   ...FOOD_DELIVERY,
   ...RESTAURANTS,
@@ -2081,6 +2079,8 @@ export const ENTITY_KB: EntityEntry[] = [
   ...INVESTMENTS,
   // Payment Platforms
   ...PAYMENT_PLATFORMS,
+  // Financial Institutions & Banks (checked after commercial merchants so VPA handles don't shadow merchants)
+  ...BANKS,
 ];
 
 /**
@@ -2102,8 +2102,9 @@ export function resolveEntityKB(
 
   // Pass 1: VPA match — very high precision
   if (vpaLower) {
+    const vpaPrefix = vpaLower.split('@')[0];
     for (const entry of ENTITY_KB) {
-      if (entry.upiIds?.some(u => vpaLower.includes(u) || u === vpaLower.split('@')[0])) {
+      if (entry.upiIds?.some(u => vpaLower.includes(u) || u === vpaPrefix)) {
         return entry;
       }
     }
@@ -2114,8 +2115,12 @@ export function resolveEntityKB(
   }
 
   // Pass 2: Alias substring match
+  // Strip VPA handles (e.g. "@hdfcbank", "@icici") so bank handle suffixes don't falsely match bank aliases for merchant payments
+  const lowerCleaned = lower.replace(/@[a-z0-9]+/g, '');
   for (const entry of ENTITY_KB) {
-    if (entry.aliases.some(alias => lower.includes(alias))) {
+    // For bank entries, match against clean text without VPA handle suffixes
+    const searchTarget = entry.entityType === 'Known Financial Institution' ? lowerCleaned : lower;
+    if (entry.aliases.some(alias => searchTarget.includes(alias))) {
       return entry;
     }
   }

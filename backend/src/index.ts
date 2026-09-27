@@ -11,6 +11,7 @@ import budgetRoutes from './routes/budget.routes';
 import savingsRoutes from './routes/savings.routes';
 import loansRoutes from './routes/loans.routes';
 import reportsRoutes from './routes/reports.routes';
+import rulesRoutes from './routes/rules.routes';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -58,6 +59,7 @@ app.use('/api/budget', budgetRoutes);
 app.use('/api/savings', savingsRoutes);
 app.use('/api/loans', loansRoutes);
 app.use('/api/reports', reportsRoutes);
+app.use('/api/rules', rulesRoutes);
 
 // ── 404 Handler ─────────────────────────────────────────────────────────────
 app.use((_req, res) => {

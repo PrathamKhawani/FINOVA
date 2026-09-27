@@ -205,5 +205,62 @@ export const api = {
     ).toString() : '';
     return apiFetch(`/reports/summary${qs}`);
   },
+
+  // Categorization Rules
+  getRules: () => apiFetch('/rules'),
+  createRule: (body: {
+    name: string;
+    matchNarration?: string;
+    matchMerchant?: string;
+    matchVPA?: string;
+    matchDirection?: string;
+    matchPaymentType?: string;
+    category: string;
+    subcategory?: string;
+    priority?: number;
+  }) => apiFetch('/rules', { method: 'POST', body: JSON.stringify(body) }),
+  updateRule: (id: string, body: Partial<{
+    name: string;
+    matchNarration: string;
+    matchMerchant: string;
+    matchVPA: string;
+    matchDirection: string;
+    matchPaymentType: string;
+    category: string;
+    subcategory: string;
+    isEnabled: boolean;
+    priority: number;
+  }>) => apiFetch(`/rules/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteRule: (id: string) => apiFetch(`/rules/${id}`, { method: 'DELETE' }),
+  previewRule: (id: string) => apiFetch(`/rules/${id}/preview`),
+  applyRuleToExisting: (id: string) => apiFetch(`/rules/${id}/apply-existing`, { method: 'POST' }),
+
+  // Transaction Review
+  reviewTransaction: (id: string, body: {
+    category: string;
+    subcategory?: string;
+    userNote?: string;
+    rememberThis?: boolean;
+    applyToExisting?: boolean;
+    ruleName?: string;
+    matchNarration?: string;
+    matchMerchant?: string;
+    matchVPA?: string;
+    matchDirection?: string;
+    matchPaymentType?: string;
+  }) => apiFetch(`/transactions/${id}/review`, { method: 'PATCH', body: JSON.stringify(body) }),
+
+  previewReviewMatch: (id: string, params: {
+    matchNarration?: string;
+    matchMerchant?: string;
+    matchVPA?: string;
+    matchDirection?: string;
+    matchPaymentType?: string;
+  }) => {
+    const qs = '?' + new URLSearchParams(
+      Object.fromEntries(Object.entries(params).filter(([, v]) => v)) as Record<string, string>
+    ).toString();
+    return apiFetch(`/transactions/${id}/review/preview${qs}`);
+  },
 };
 

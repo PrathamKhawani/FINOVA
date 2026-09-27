@@ -7,7 +7,7 @@ import { useAuth } from '@/contexts/AuthContext';
 import {
   LayoutDashboard, UploadCloud, FileText, ArrowRightLeft,
   LogOut, Smartphone, PiggyBank, Target, CreditCard, BarChart2,
-  ChevronDown, Menu, X
+  ChevronDown, Menu, X, Shield
 } from 'lucide-react';
 
 export default function Navbar() {
@@ -29,6 +29,7 @@ export default function Navbar() {
     { label: 'Savings Goals', href: '/savings', icon: Target },
     { label: 'Loans & EMI', href: '/loans', icon: CreditCard },
     { label: 'Reports', href: '/reports', icon: BarChart2 },
+    { label: 'Rules', href: '/rules', icon: Shield },
   ];
 
   const isActive = (href: string) => pathname === href;

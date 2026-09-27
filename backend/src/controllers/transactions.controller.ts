@@ -3,7 +3,7 @@ import prisma from '../lib/prisma';
 import { AuthRequest } from '../middleware/auth.middleware';
 
 // GET /api/transactions
-// Query params: category, type (credit|debit), search, page, limit, statementId
+// Query params: category, type (credit|debit), search, page, limit, statementId, needsReview, source
 export const getTransactions = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const userId = req.user!.userId;
@@ -12,6 +12,8 @@ export const getTransactions = async (req: AuthRequest, res: Response): Promise<
       type,
       search,
       statementId,
+      needsReview,
+      source,
       page = '1',
       limit = '20',
     } = req.query as Record<string, string>;
@@ -28,6 +30,8 @@ export const getTransactions = async (req: AuthRequest, res: Response): Promise<
     if (category) where.category = category;
     if (type === 'credit' || type === 'debit') where.type = type;
     if (statementId) where.statementId = statementId;
+    if (source === 'BANK' || source === 'WALLET') where.source = source;
+    if (needsReview === 'true') where.needsReview = true;
     if (search) {
       where.OR = [
         { description: { contains: search, mode: 'insensitive' } },

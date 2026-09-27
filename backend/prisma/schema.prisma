@@ -22,6 +22,7 @@ model User {
   budgets       Budget[]
   savingsGoals  SavingsGoal[]
   loans         Loan[]
+  categorizationRules UserCategorizationRule[]
 }
 
 model RefreshToken {
@@ -57,18 +58,27 @@ model Transaction {
   rawNarration    String?
   merchantName    String?
   counterparty    String?
+  // paymentChannel: HOW the money moved (UPI/NEFT/IMPS/ATM/Card etc.) — separate from statementSource
   channel         String?
   amount          Float
   debit           Float?
   credit          Float?
   type            String        // "credit" | "debit"
   transactionType String?       // "Income" | "Expense" | "Transfer" | "Refund"
-  source          String        @default("BANK")   // "BANK" | "WALLET"
-  provider        String?                           // "HDFC" | "PhonePe" | "Paytm" etc.
+  // statementSource: WHERE the statement came from ("BANK" | "WALLET")
+  source          String        @default("BANK")
+  // provider: Which bank / wallet produced this statement ("HDFC" | "PhonePe" | "Paytm" etc.)
+  provider        String?
   category        String
   subcategory     String?
   confidence      String?       // "high" | "medium" | "low"
   referenceId     String?
+  // Additional extracted fields preserved verbatim from source
+  time            String?       // HH:MM or HH:MM:SS from source
+  upiId           String?       // UPI VPA (e.g. merchant@upi)
+  orderId         String?       // Order ID from wallet statements
+  notes           String?       // Notes/remarks field from CSV/wallet
+  linkedAccount   String?       // Bank account / wallet account used
   balance         Float?
   isDuplicate     Boolean       @default(false)
   duplicateOf     String?       // ID of the transaction this might duplicate
@@ -80,8 +90,15 @@ model Transaction {
   parentCompany        String?  // Holding company if different from brand
   extractedVPA         String?  // Extracted UPI VPA from the narration
   matchedAlias         String?  // Which alias triggered the KB match
+  // User Review Override — NEVER modifies raw financial values
+  userCategory         String?  // User-selected category (overrides auto category for display)
+  userSubcategory      String?  // User-selected subcategory
+  userNote             String?  // User's comment on this transaction
+  reviewedAt           DateTime? // When the user last reviewed/corrected this
+  appliedRuleId        String?  // ID of UserCategorizationRule that classified this
   createdAt       DateTime      @default(now())
   statement       BankStatement @relation(fields: [statementId], references: [id], onDelete: Cascade)
+  appliedRule     UserCategorizationRule? @relation(fields: [appliedRuleId], references: [id], onDelete: SetNull)
 }
 
 // ── Budget Management ─────────────────────────────────────────────────────────
@@ -110,6 +127,33 @@ model SavingsGoal {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+// ── User Categorization Rules ─────────────────────────────────────────────────
+// Stores user-defined rules to auto-classify future matching transactions.
+// Rules are applied BEFORE generic auto-categorization.
+// Raw financial values (amount, date, narration) are NEVER modified.
+model UserCategorizationRule {
+  id              String    @id @default(cuid())
+  userId          String
+  name            String    // Human-readable rule name e.g. "ABC Services → Business Income"
+  // Matching signals (all must match when set)
+  matchNarration  String?   // Normalized narration substring to match
+  matchMerchant   String?   // Merchant/counterparty name to match
+  matchVPA        String?   // UPI VPA to match
+  matchDirection  String?   // "credit" | "debit" | null (any)
+  matchPaymentType String?  // "UPI" | "NEFT" | "IMPS" | null (any)
+  // Target classification
+  category        String
+  subcategory     String?
+  // Rule meta
+  isEnabled       Boolean   @default(true)
+  priority        Int       @default(0)  // Higher = checked first
+  appliedCount    Int       @default(0)  // How many txns this rule has auto-classified
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions    Transaction[]
 }
 
 // ── Loan & EMI Tracker ────────────────────────────────────────────────────────
