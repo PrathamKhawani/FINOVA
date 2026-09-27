@@ -1,1 +1,5 @@
 .vercel
+.env*.local
+.env.production
+test-production-api.js
+
