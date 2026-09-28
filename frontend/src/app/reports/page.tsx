@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { api } from '@/lib/api';
 import Navbar from '@/components/Navbar';
 import { BarChart2, TrendingUp, TrendingDown, PieChart, Download, RefreshCw, Calendar, Repeat } from 'lucide-react';
+import { generateFinancialReportPDF } from '@/lib/pdf-export';
 
 type Tab = 'overview' | 'categories' | 'merchants' | 'monthly' | 'recurring';
 
@@ -68,11 +69,11 @@ export default function ReportsPage() {
             </p>
           </div>
           <button
-            onClick={() => window.print()}
+            onClick={() => generateFinancialReportPDF(data, { month: selectedMonth, source: selectedSource })}
             className="flex items-center gap-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-xl text-sm font-medium transition-colors"
           >
             <Download className="w-4 h-4" />
-            Print / Export
+            Download PDF Report
           </button>
         </div>
 

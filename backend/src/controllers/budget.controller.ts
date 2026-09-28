@@ -6,10 +6,42 @@ import { AuthRequest } from '../middleware/auth.middleware';
 export const getBudgets = async (req: AuthRequest, res: Response): Promise<void> => {
   try {
     const monthYear = (req.query.month as string) || getCurrentMonthYear();
-    const budgets = await prisma.budget.findMany({
+    let budgets = await prisma.budget.findMany({
       where: { userId: req.user!.userId, monthYear },
       orderBy: { category: 'asc' },
     });
+
+    // Auto-rollover: if no budgets exist for this month, copy from the most recent month
+    if (budgets.length === 0) {
+      const lastMonthBudget = await prisma.budget.findFirst({
+        where: { userId: req.user!.userId },
+        orderBy: { monthYear: 'desc' },
+      });
+
+      if (lastMonthBudget && lastMonthBudget.monthYear !== monthYear) {
+        const pastBudgets = await prisma.budget.findMany({
+          where: { userId: req.user!.userId, monthYear: lastMonthBudget.monthYear },
+        });
+
+        if (pastBudgets.length > 0) {
+          await prisma.budget.createMany({
+            data: pastBudgets.map(b => ({
+              userId: b.userId,
+              category: b.category,
+              subcategory: b.subcategory,
+              monthYear: monthYear,
+              limitAmount: b.limitAmount,
+            })),
+          });
+
+          // Fetch the newly created budgets
+          budgets = await prisma.budget.findMany({
+            where: { userId: req.user!.userId, monthYear },
+            orderBy: { category: 'asc' },
+          });
+        }
+      }
+    }
 
     // Attach actual spending for each budget category
     const [year, month] = monthYear.split('-').map(Number);

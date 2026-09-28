@@ -32,7 +32,7 @@ export default function BudgetPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const currentMonth = new Date().toISOString().slice(0, 7);
+  const [currentMonth, setCurrentMonth] = useState(new Date().toISOString().slice(0, 7));
 
   const fetchBudgets = async () => {
     try {
@@ -45,7 +45,7 @@ export default function BudgetPage() {
     }
   };
 
-  useEffect(() => { fetchBudgets(); }, []);
+  useEffect(() => { fetchBudgets(); }, [currentMonth]);
 
   const handleCreate = async () => {
     if (!form.category || !form.limitAmount) return;
@@ -82,9 +82,31 @@ export default function BudgetPage() {
         <div className="flex items-center justify-between mb-8">
           <div>
             <h1 className="text-2xl font-bold text-white">Budget Management</h1>
-            <p className="text-gray-400 text-sm mt-1">
-              {new Date().toLocaleString('en-IN', { month: 'long', year: 'numeric' })}
-            </p>
+            <div className="flex items-center gap-3 mt-1 text-gray-400 text-sm">
+              <button 
+                onClick={() => {
+                  const [y, m] = currentMonth.split('-').map(Number);
+                  const prev = new Date(y, m - 2, 1);
+                  setCurrentMonth(`${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, '0')}`);
+                }}
+                className="hover:text-white transition-colors"
+              >
+                ← Prev
+              </button>
+              <span className="font-medium">
+                {new Date(currentMonth + '-01').toLocaleString('en-IN', { month: 'long', year: 'numeric' })}
+              </span>
+              <button 
+                onClick={() => {
+                  const [y, m] = currentMonth.split('-').map(Number);
+                  const next = new Date(y, m, 1);
+                  setCurrentMonth(`${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`);
+                }}
+                className="hover:text-white transition-colors"
+              >
+                Next →
+              </button>
+            </div>
           </div>
           <button
             onClick={() => setShowForm(!showForm)}
