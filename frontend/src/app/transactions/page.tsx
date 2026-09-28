@@ -508,35 +508,35 @@ export default function TransactionsPage() {
         />
       )}
 
-      <main className="flex-1 max-w-7xl w-full mx-auto p-6 md:p-8 flex flex-col gap-6">
+      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 md:p-8 flex flex-col gap-5 sm:gap-6">
         {/* Header */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div>
-            <h1 className="text-3xl font-extrabold text-white">Transactions Master Ledger</h1>
-            <p className="text-slate-400 text-sm mt-1">
+            <h1 className="text-2xl sm:text-3xl font-extrabold text-white">Transactions Master Ledger</h1>
+            <p className="text-slate-400 text-xs sm:text-sm mt-1">
               Verbatim financial data · Click a row to expand · Click the category badge to review
             </p>
           </div>
           <button
             onClick={exportCSV}
             disabled={filtered.length === 0}
-            className="btn-secondary text-sm px-4 py-2.5 flex items-center gap-2 border-slate-700 hover:bg-slate-800 disabled:opacity-50"
+            className="btn-secondary text-xs sm:text-sm px-4 py-2.5 flex items-center justify-center gap-2 border-slate-700 hover:bg-slate-800 disabled:opacity-50 w-full sm:w-auto"
           >
             <Download size={16} /> Export Full Ledger CSV
           </button>
         </div>
 
         {/* Tabs — All / Needs Review */}
-        <div className="flex items-center gap-1 bg-slate-900/80 border border-slate-800 rounded-xl p-1 w-fit">
+        <div className="flex items-center gap-1 bg-slate-900/80 border border-slate-800 rounded-xl p-1 w-full sm:w-fit">
           <button
             onClick={() => setActiveTab('all')}
-            className={`px-4 py-2 text-sm rounded-lg font-semibold transition-colors ${activeTab === 'all' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
+            className={`flex-1 sm:flex-initial px-4 py-2 text-xs sm:text-sm rounded-lg font-semibold transition-colors ${activeTab === 'all' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
           >
             All Transactions
           </button>
           <button
             onClick={() => setActiveTab('review')}
-            className={`px-4 py-2 text-sm rounded-lg font-semibold transition-colors flex items-center gap-2 ${activeTab === 'review' ? 'bg-orange-600 text-white' : 'text-slate-400 hover:text-white'}`}
+            className={`flex-1 sm:flex-initial px-4 py-2 text-xs sm:text-sm rounded-lg font-semibold transition-colors flex items-center justify-center gap-2 ${activeTab === 'review' ? 'bg-orange-600 text-white' : 'text-slate-400 hover:text-white'}`}
           >
             <AlertTriangle size={14} />
             Needs Review
@@ -563,8 +563,8 @@ export default function TransactionsPage() {
         )}
 
         {/* Filter Bar */}
-        <div className="glass-card p-4 border-slate-800 flex flex-wrap items-center justify-between gap-4">
-          <div className="relative flex-1 min-w-[260px]">
+        <div className="glass-card p-3.5 sm:p-4 border-slate-800 flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center justify-between gap-3 sm:gap-4">
+          <div className="relative flex-1 min-w-[200px] w-full">
             <Search size={16} className="absolute left-3.5 top-3 text-slate-400" />
             <input
               type="text"
@@ -574,11 +574,11 @@ export default function TransactionsPage() {
               className="bg-slate-900/90 border border-slate-700/80 text-xs text-white rounded-xl pl-10 pr-4 py-2.5 focus:outline-none focus:border-blue-500 w-full"
             />
           </div>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 sm:gap-3 w-full sm:w-auto">
             <select
               value={categoryFilter}
               onChange={e => setCategoryFilter(e.target.value)}
-              className="bg-slate-900/90 border border-slate-700/80 text-xs text-white rounded-xl px-3 py-2.5 focus:outline-none focus:border-blue-500"
+              className="col-span-2 sm:col-span-1 bg-slate-900/90 border border-slate-700/80 text-xs text-white rounded-xl px-3 py-2.5 focus:outline-none focus:border-blue-500 truncate"
             >
               <option value="ALL">All Categories ({categoriesList.length})</option>
               {categoriesList.map(cat => <option key={cat} value={cat}>{cat}</option>)}
@@ -597,10 +597,10 @@ export default function TransactionsPage() {
               onChange={e => setConfidenceFilter(e.target.value)}
               className="bg-slate-900/90 border border-slate-700/80 text-xs text-white rounded-xl px-3 py-2.5 focus:outline-none focus:border-blue-500"
             >
-              <option value="ALL">All Confidence Levels</option>
-              <option value="high">High Confidence</option>
-              <option value="medium">Medium Confidence</option>
-              <option value="low">Low Confidence</option>
+              <option value="ALL">All Confidence</option>
+              <option value="high">High</option>
+              <option value="medium">Medium</option>
+              <option value="low">Low</option>
             </select>
           </div>
         </div>
@@ -730,24 +730,27 @@ export default function TransactionsPage() {
                             <td colSpan={8} className="p-5">
                               <div className="flex flex-col gap-4 text-xs">
                                 {/* Header */}
-                                <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                                  <div className="flex items-center gap-2 text-blue-400 font-bold">
-                                    <Info size={16} />
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+                                  <div className="flex items-center gap-2 text-blue-400 font-bold text-xs sm:text-sm">
+                                    <Info size={16} className="shrink-0" />
                                     <span>Entity Intelligence — Categorization Audit</span>
                                   </div>
-                                  <div className="flex items-center gap-3">
+                                  <div className="flex flex-wrap items-center justify-between sm:justify-end gap-3 min-w-0">
                                     <button
                                       onClick={e => { e.stopPropagation(); setReviewingTx(tx); }}
-                                      className="flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-1.5 rounded-lg bg-orange-500/10 border border-orange-500/30 text-orange-400 hover:bg-orange-500/20 transition-colors"
+                                      className="flex items-center gap-1.5 text-xs font-semibold px-3 py-1.5 rounded-lg bg-orange-500/10 border border-orange-500/30 text-orange-400 hover:bg-orange-500/20 transition-colors shrink-0"
                                     >
-                                      <Tag size={11} /> Reclassify
+                                      <Tag size={12} /> Reclassify
                                     </button>
-                                    <span className="text-slate-400 text-[11px]">ID: <code className="text-slate-200 font-mono">{tx.id}</code></span>
+                                    <div className="flex items-center gap-1.5 text-xs text-slate-400 bg-slate-900/90 px-3 py-1.5 rounded-lg border border-slate-800 select-all overflow-x-auto max-w-full">
+                                      <span className="font-semibold text-slate-500 shrink-0">ID:</span>
+                                      <code className="text-slate-200 font-mono text-[11px] whitespace-nowrap select-all">{tx.id}</code>
+                                    </div>
                                   </div>
                                 </div>
 
                                 {/* Row 1: Entity Identity */}
-                                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
                                   <div className="bg-slate-900/90 p-3 rounded-xl border border-slate-800">
                                     <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Identified Entity</span>
                                     <span className="font-semibold text-white text-sm">{entity}</span>

@@ -22,34 +22,43 @@ export const getBudgets = async (req: AuthRequest, res: Response): Promise<void>
         date: { gte: startDate, lte: endDate },
         isDuplicate: false,
       },
-      select: { amount: true, category: true, type: true, transactionType: true },
+      select: { amount: true, category: true, userCategory: true, type: true, transactionType: true },
     });
 
     const spendMap: Record<string, number> = {};
     transactions.forEach(t => {
+      const cat = t.userCategory || t.category;
       const txType = t.transactionType || (t.type === 'credit' ? 'Income' : 'Expense');
-      if (txType === 'Transfer' || txType === 'P2P') return;
+      
+      // Do not count transfers/refunds/P2P/internal transfers as category spending
+      if (txType === 'Transfer' || txType === 'P2P' || cat.includes('P2P') || cat.includes('Transfer') || cat.includes('Income')) return;
       
       if (txType === 'Refund') {
-        if (!spendMap[t.category]) spendMap[t.category] = 0;
-        spendMap[t.category] -= t.amount;
-      } else if (txType === 'Expense' || txType === 'EMI/Loan' || txType === 'Investment') {
-        if (!spendMap[t.category]) spendMap[t.category] = 0;
-        spendMap[t.category] += t.amount;
+        if (!spendMap[cat]) spendMap[cat] = 0;
+        spendMap[cat] -= t.amount;
+      } else if (txType === 'Expense' || txType === 'EMI/Loan' || txType === 'Investment' || t.type === 'debit') {
+        if (!spendMap[cat]) spendMap[cat] = 0;
+        spendMap[cat] += t.amount;
       }
     });
 
-    // Prevent negative spending from massive refunds
+    // Prevent negative spending values from standalone refunds
     Object.keys(spendMap).forEach(k => {
       if (spendMap[k] < 0) spendMap[k] = 0;
     });
 
-    const enriched = budgets.map(b => ({
-      ...b,
-      spent: Math.round((spendMap[b.category] || 0) * 100) / 100,
-      remaining: Math.max(0, Math.round((b.limitAmount - (spendMap[b.category] || 0)) * 100) / 100),
-      usagePercent: b.limitAmount > 0 ? Math.round(((spendMap[b.category] || 0) / b.limitAmount) * 100) : 0,
-    }));
+    const enriched = budgets.map(b => {
+      const spent = Math.round((spendMap[b.category] || 0) * 100) / 100;
+      const remaining = Math.round((b.limitAmount - spent) * 100) / 100;
+      const usagePercent = b.limitAmount > 0 ? Math.round((spent / b.limitAmount) * 100) : 0;
+
+      return {
+        ...b,
+        spent,
+        remaining,
+        usagePercent,
+      };
+    });
 
     res.json({ success: true, data: { budgets: enriched, monthYear } });
   } catch (error) {

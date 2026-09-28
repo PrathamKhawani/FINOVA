@@ -95,7 +95,7 @@ export default function LoansPage() {
 
         {/* Summary */}
         {loans.length > 0 && (
-          <div className="grid grid-cols-3 gap-4 mb-6">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 mb-6">
             <div className="p-4 rounded-xl bg-gray-900/50 border border-gray-700/30 text-center">
               <p className="text-xl font-bold text-red-400">₹{totalEMI.toLocaleString('en-IN')}/mo</p>
               <p className="text-gray-400 text-xs mt-1">Total Monthly EMI</p>
@@ -136,7 +136,7 @@ export default function LoansPage() {
               <h3 className="text-white font-semibold">{editLoan ? 'Edit Loan' : 'Add New Loan'}</h3>
               <button onClick={() => { setShowForm(false); setEditLoan(null); setForm(emptyForm); }}><X className="w-4 h-4 text-gray-400" /></button>
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <input placeholder="Loan name (e.g. HDFC Home Loan)" value={form.name} onChange={e => setForm({...form, name: e.target.value})}
                 className="col-span-2 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-blue-500" />
               <input placeholder="Lender name" value={form.lenderName} onChange={e => setForm({...form, lenderName: e.target.value})}
@@ -216,7 +216,7 @@ export default function LoansPage() {
                       </button>
                     </div>
                   </div>
-                  <div className="grid grid-cols-3 gap-3 mb-3 text-center">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 sm:gap-3 mb-3 text-center">
                     <div><p className="text-white text-sm font-medium">₹{l.principalAmount.toLocaleString('en-IN')}</p><p className="text-gray-500 text-xs">Principal</p></div>
                     <div><p className="text-orange-400 text-sm font-medium">₹{l.outstandingAmount.toLocaleString('en-IN')}</p><p className="text-gray-500 text-xs">Outstanding</p></div>
                     <div><p className="text-green-400 text-sm font-medium">₹{paid.toLocaleString('en-IN')}</p><p className="text-gray-500 text-xs">Paid Off</p></div>

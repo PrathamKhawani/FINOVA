@@ -163,26 +163,26 @@ export default function DashboardPage() {
     <div className="mesh-bg min-h-screen flex flex-col">
       <Navbar />
 
-      <main className="flex-1 max-w-7xl w-full mx-auto p-6 md:p-8 flex flex-col gap-8">
+      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 md:p-8 flex flex-col gap-6 sm:gap-8">
         {/* Top Header */}
-        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 animate-fadeInUp">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-fadeInUp">
           <div>
-            <h1 className="text-3xl font-extrabold tracking-tight text-white flex items-center gap-3">
+            <h1 className="text-xl sm:text-2xl md:text-3xl font-extrabold tracking-tight text-white flex items-center gap-3">
               Financial Intelligence Infrastructure
             </h1>
-            <p className="text-slate-400 text-sm mt-1">
+            <p className="text-slate-400 text-xs sm:text-sm mt-1">
               Automated multi-bank processing, rule-based classification & predictive cash flow analytics
             </p>
           </div>
-          <div className="flex items-center gap-3">
-            <Link href="/transactions">
-              <button className="btn-secondary text-sm px-4 py-2.5 flex items-center gap-2">
-                <Layers size={16} /> View Master Ledger
+          <div className="flex items-center gap-2.5 sm:gap-3 w-full sm:w-auto">
+            <Link href="/transactions" className="flex-1 sm:flex-initial">
+              <button className="btn-secondary text-xs sm:text-sm px-3 sm:px-4 py-2.5 flex items-center justify-center gap-2 w-full">
+                <Layers size={16} /> <span className="whitespace-nowrap">Master Ledger</span>
               </button>
             </Link>
-            <Link href="/upload">
-              <button className="btn-primary flex items-center gap-2 text-sm px-5 py-2.5 shadow-lg shadow-blue-500/20">
-                <Upload size={16} /> Upload Bank Statement
+            <Link href="/upload" className="flex-1 sm:flex-initial">
+              <button className="btn-primary flex items-center justify-center gap-2 text-xs sm:text-sm px-3.5 sm:px-5 py-2.5 shadow-lg shadow-blue-500/20 w-full">
+                <Upload size={16} /> <span className="whitespace-nowrap">Upload Statement</span>
               </button>
             </Link>
           </div>
@@ -421,28 +421,28 @@ export default function DashboardPage() {
                     </span>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4 bg-slate-900/80 p-4 rounded-xl border border-slate-800 mb-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4 bg-slate-900/80 p-4 rounded-xl border border-slate-800 mb-4">
                     <div>
                       <span className="text-xs text-slate-400 block">Expected Monthly Income</span>
-                      <span className="text-lg font-black text-emerald-400">
+                      <span className="text-base sm:text-lg font-black text-emerald-400">
                         ₹{(forecast?.expectedIncome || 0).toLocaleString('en-IN')}
                       </span>
                     </div>
                     <div>
                       <span className="text-xs text-slate-400 block">Fixed Commitments</span>
-                      <span className="text-lg font-black text-purple-400">
+                      <span className="text-base sm:text-lg font-black text-purple-400">
                         ₹{(forecast?.expectedFixedCommitments || 0).toLocaleString('en-IN')}
                       </span>
                     </div>
                     <div>
                       <span className="text-xs text-slate-400 block">Est. Discretionary Spend</span>
-                      <span className="text-lg font-black text-rose-400">
+                      <span className="text-base sm:text-lg font-black text-rose-400">
                         ₹{(forecast?.estimatedDiscretionaryExpenses || 0).toLocaleString('en-IN')}
                       </span>
                     </div>
                     <div>
                       <span className="text-xs text-slate-400 block">Projected Balance</span>
-                      <span className="text-lg font-black text-blue-400">
+                      <span className="text-base sm:text-lg font-black text-blue-400">
                         ₹{(forecast?.projectedMonthEndBalance || 0).toLocaleString('en-IN')}
                       </span>
                     </div>

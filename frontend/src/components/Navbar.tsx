@@ -127,30 +127,83 @@ export default function Navbar() {
         </button>
       </div>
 
-      {/* Mobile Menu */}
+      {/* Mobile Menu Drawer */}
       {mobileOpen && (
-        <div className="absolute top-full left-0 right-0 bg-gray-950/98 border-b border-gray-700/50 p-4 lg:hidden z-50">
-          <div className="grid grid-cols-2 gap-1">
-            {[...primaryNav, ...moreNav].map(item => {
-              const Icon = item.icon;
-              const active = isActive(item.href);
-              return (
-                <Link key={item.href} href={item.href} onClick={() => setMobileOpen(false)}
-                  className={`flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm font-medium transition-all ${active ? 'text-white bg-white/10' : 'text-gray-400 hover:text-white hover:bg-white/5'}`}>
-                  <Icon size={15} className={active ? 'text-blue-400' : ''} />
-                  {item.label}
-                </Link>
-              );
-            })}
-          </div>
-          {user && (
-            <div className="mt-3 pt-3 border-t border-gray-700/30 flex items-center justify-between">
-              <span className="text-sm text-gray-300">{user.name}</span>
-              <button onClick={logout} className="flex items-center gap-1.5 text-xs text-red-400 hover:text-red-300">
-                <LogOut size={14} /> Logout
-              </button>
+        <div
+          className="fixed inset-x-0 top-[61px] border-b border-slate-800 p-4 lg:hidden z-[100] shadow-2xl max-h-[calc(100vh-65px)] overflow-y-auto"
+          style={{ background: '#090d16' }}
+        >
+          <div className="flex flex-col gap-3">
+            <div className="text-[10px] uppercase font-bold tracking-wider text-slate-400 px-1">
+              Core Modules
             </div>
-          )}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {primaryNav.map(item => {
+                const Icon = item.icon;
+                const active = isActive(item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={() => setMobileOpen(false)}
+                    className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                      active
+                        ? 'text-white bg-blue-600/20 border border-blue-500/40'
+                        : 'text-slate-300 hover:text-white bg-slate-900/80 border border-slate-800/80'
+                    }`}
+                  >
+                    <Icon size={18} className={active ? 'text-blue-400' : 'text-slate-400'} />
+                    <span>{item.label}</span>
+                  </Link>
+                );
+              })}
+            </div>
+
+            <div className="text-[10px] uppercase font-bold tracking-wider text-slate-400 px-1 pt-2 border-t border-slate-800">
+              Financial Tools
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {moreNav.map(item => {
+                const Icon = item.icon;
+                const active = isActive(item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={() => setMobileOpen(false)}
+                    className={`flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-medium transition-all ${
+                      active
+                        ? 'text-white bg-blue-600/20 border border-blue-500/40'
+                        : 'text-slate-300 hover:text-white bg-slate-900/80 border border-slate-800/80'
+                    }`}
+                  >
+                    <Icon size={18} className={active ? 'text-emerald-400' : 'text-slate-400'} />
+                    <span>{item.label}</span>
+                  </Link>
+                );
+              })}
+            </div>
+
+            {user && (
+              <div className="mt-2 pt-3 border-t border-slate-800 flex items-center justify-between bg-slate-900/60 p-3 rounded-xl border border-slate-800">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-blue-500 to-cyan-500 flex items-center justify-center font-bold text-white text-xs shrink-0">
+                    {user.name ? user.name.charAt(0).toUpperCase() : 'U'}
+                  </div>
+                  <div className="flex flex-col truncate">
+                    <span className="text-xs font-semibold text-white truncate">{user.name}</span>
+                    <span className="text-[10px] text-slate-400 truncate">{user.email}</span>
+                  </div>
+                </div>
+                <button
+                  onClick={() => { setMobileOpen(false); logout(); }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-500/10 border border-rose-500/30 text-rose-400 text-xs font-semibold hover:bg-rose-500/20 shrink-0"
+                >
+                  <LogOut size={14} /> Logout
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       )}
     </nav>

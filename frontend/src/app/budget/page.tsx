@@ -96,7 +96,7 @@ export default function BudgetPage() {
         </div>
 
         {/* Summary Cards */}
-        <div className="grid grid-cols-3 gap-4 mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 mb-6">
           {[
             { label: 'Total Budget', value: `₹${totalBudget.toLocaleString('en-IN')}`, color: 'text-blue-400' },
             { label: 'Total Spent', value: `₹${totalSpent.toLocaleString('en-IN')}`, color: 'text-red-400' },
@@ -113,7 +113,7 @@ export default function BudgetPage() {
         {showForm && (
           <div className="mb-6 p-5 rounded-xl border border-emerald-500/30 bg-emerald-500/5">
             <h3 className="text-white font-semibold mb-4">New Budget Category</h3>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <select
                 value={form.category}
                 onChange={e => setForm({ ...form, category: e.target.value })}

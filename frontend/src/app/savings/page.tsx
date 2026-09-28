@@ -101,12 +101,12 @@ export default function SavingsPage() {
 
         {/* Derived Data Insights */}
         {derivedData && (
-          <div className="mb-6 p-4 rounded-xl bg-blue-900/20 border border-blue-500/30 flex items-center justify-between">
+          <div className="mb-6 p-4 rounded-xl bg-blue-900/20 border border-blue-500/30 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
             <div>
               <h3 className="text-blue-400 font-semibold text-sm">Data-Driven Insights</h3>
               <p className="text-gray-400 text-xs mt-1">Derived from your uploaded statements (excluding transfers)</p>
             </div>
-            <div className="flex gap-4 text-right">
+            <div className="flex gap-4 text-left sm:text-right w-full sm:w-auto justify-between sm:justify-end">
               <div>
                 <p className="text-xs text-gray-500">Actual Net Savings</p>
                 <p className="text-sm font-bold text-white">₹{derivedData.actualNetSavings.toLocaleString('en-IN')}</p>
@@ -121,7 +121,7 @@ export default function SavingsPage() {
 
         {/* Summary */}
         {goals.length > 0 && (
-          <div className="grid grid-cols-3 gap-4 mb-6">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4 mb-6">
             <div className="p-4 rounded-xl bg-gray-900/50 border border-gray-700/30 text-center">
               <p className="text-xl font-bold text-blue-400">₹{totalTarget.toLocaleString('en-IN')}</p>
               <p className="text-gray-400 text-xs mt-1">Total Target</p>
@@ -153,7 +153,7 @@ export default function SavingsPage() {
                 </button>
               ))}
             </div>
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <input placeholder="Goal name (e.g. Emergency Fund)"
                 value={form.name} onChange={e => setForm({ ...form, name: e.target.value })}
                 className="col-span-2 px-3 py-2 rounded-lg bg-gray-800 border border-gray-700 text-white text-sm focus:outline-none focus:border-emerald-500" />
