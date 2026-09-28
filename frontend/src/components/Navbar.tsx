@@ -127,12 +127,20 @@ export default function Navbar() {
         </button>
       </div>
 
-      {/* Mobile Menu Drawer */}
+      {/* Mobile Menu Drawer & Overlay */}
       {mobileOpen && (
-        <div
-          className="fixed inset-x-0 top-[61px] border-b border-slate-800 p-4 lg:hidden z-[100] shadow-2xl max-h-[calc(100vh-65px)] overflow-y-auto"
-          style={{ background: '#090d16' }}
-        >
+        <>
+          {/* Backdrop Overlay */}
+          <div
+            className="fixed inset-0 bg-black/80 backdrop-blur-md z-[990] lg:hidden"
+            onClick={() => setMobileOpen(false)}
+          />
+
+          {/* Opaque Mobile Navigation Panel */}
+          <div
+            className="fixed inset-x-0 top-[61px] border-b border-slate-800 p-5 lg:hidden z-[999] shadow-2xl max-h-[calc(100vh-65px)] overflow-y-auto"
+            style={{ background: '#080c14' }}
+          >
           <div className="flex flex-col gap-3">
             <div className="text-[10px] uppercase font-bold tracking-wider text-slate-400 px-1">
               Core Modules
@@ -205,6 +213,7 @@ export default function Navbar() {
             )}
           </div>
         </div>
+        </>
       )}
     </nav>
   );

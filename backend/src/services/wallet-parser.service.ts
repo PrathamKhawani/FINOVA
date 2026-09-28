@@ -118,23 +118,29 @@ export function parseWalletCSV(
 ): WalletParseResult {
   const warnings: string[] = [];
   const transactions: ParsedWalletTransaction[] = [];
-  const provider = detectProvider(content, filename);
+  
+  // 1. Strip UTF-8 BOM if present
+  const cleanContent = content.replace(/^\uFEFF/, '');
+  const provider = detectProvider(cleanContent, filename);
 
-  const rawLines = content.split(/\r?\n/);
-  const lines = rawLines.filter(l => l.trim().length > 0);
+  const rawLines = cleanContent.split(/\r?\n/);
+  const nonFolderLines = rawLines.filter(l => l.trim().length > 0);
 
-  if (lines.length < 2) {
+  if (nonFolderLines.length < 2) {
     return { provider, transactions: [], warnings: ['CSV file is empty or has only headers'] };
   }
 
-  // Find header line — search first 10 rows for the one with Date + (Description or Amount)
-  let headerLine = 0;
+  // 2. Auto-detect delimiter
+  const delimiter = detectDelimiter(nonFolderLines);
+
+  // 3. Find header line — search first 20 rows for the one with Date + (Description or Amount or Debit/Credit)
+  let headerLine = -1;
   let headers: string[] = [];
 
-  for (let i = 0; i < Math.min(10, lines.length); i++) {
-    const cols = parseCSVRow(lines[i]).map(normalizeHeader);
-    const hasDate   = cols.some(c => DATE_COLS.includes(c));
-    const hasAmount = cols.some(c => [...DESC_COLS, ...AMOUNT_COLS, ...DEBIT_COLS, ...CREDIT_COLS].includes(c));
+  for (let i = 0; i < Math.min(20, nonFolderLines.length); i++) {
+    const cols = parseCSVRow(nonFolderLines[i], delimiter).map(normalizeHeader);
+    const hasDate   = cols.some(c => DATE_COLS.includes(c) || c.includes('date'));
+    const hasAmount = cols.some(c => [...DESC_COLS, ...AMOUNT_COLS, ...DEBIT_COLS, ...CREDIT_COLS, ...TYPE_COLS].includes(c));
     if (hasDate && hasAmount) {
       headerLine = i;
       headers = cols;
@@ -142,41 +148,54 @@ export function parseWalletCSV(
     }
   }
 
-  if (headers.length === 0) {
-    warnings.push('Could not detect column headers in first 10 rows. Using first row as headers.');
-    headers = parseCSVRow(lines[0]).map(normalizeHeader);
+  if (headerLine === -1) {
+    // Fallback: pick first row with at least 2 non-empty columns
+    for (let i = 0; i < Math.min(10, nonFolderLines.length); i++) {
+      const cols = parseCSVRow(nonFolderLines[i], delimiter).map(normalizeHeader);
+      const nonCount = cols.filter(c => c.length > 0).length;
+      if (nonCount >= 2) {
+        headerLine = i;
+        headers = cols;
+        warnings.push(`Could not detect standard header names. Using row ${i + 1} as headers.`);
+        break;
+      }
+    }
+  }
+
+  if (headerLine === -1 || headers.length === 0) {
+    headers = parseCSVRow(nonFolderLines[0], delimiter).map(normalizeHeader);
     headerLine = 0;
   }
 
   // Build column index map
   const idx = {
-    date:    headers.findIndex(h => DATE_COLS.includes(h)),
-    time:    headers.findIndex(h => TIME_COLS.includes(h)),
-    desc:    headers.findIndex(h => DESC_COLS.includes(h)),
-    debit:   headers.findIndex(h => DEBIT_COLS.includes(h)),
-    credit:  headers.findIndex(h => CREDIT_COLS.includes(h)),
-    amount:  headers.findIndex(h => AMOUNT_COLS.includes(h)),
-    type:    headers.findIndex(h => TYPE_COLS.includes(h)),
-    balance: headers.findIndex(h => BALANCE_COLS.includes(h)),
-    ref:     headers.findIndex(h => REF_COLS.includes(h)),
-    upiId:   headers.findIndex(h => UPI_ID_COLS.includes(h)),
-    orderId: headers.findIndex(h => ORDER_ID_COLS.includes(h)),
-    notes:   headers.findIndex(h => NOTES_COLS.includes(h)),
-    account: headers.findIndex(h => ACCOUNT_COLS.includes(h)),
-    channel: headers.findIndex(h => CHANNEL_COLS.includes(h)),
+    date:    headers.findIndex(h => DATE_COLS.includes(h) || h.includes('date')),
+    time:    headers.findIndex(h => TIME_COLS.includes(h) || h.includes('time')),
+    desc:    headers.findIndex(h => DESC_COLS.includes(h) || h.includes('desc') || h.includes('narration') || h.includes('detail')),
+    debit:   headers.findIndex(h => DEBIT_COLS.includes(h) || h.includes('debit') || h.includes('paid') || h.includes('dr')),
+    credit:  headers.findIndex(h => CREDIT_COLS.includes(h) || h.includes('credit') || h.includes('received') || h.includes('cr')),
+    amount:  headers.findIndex(h => AMOUNT_COLS.includes(h) || h === 'amount' || h.includes('amount')),
+    type:    headers.findIndex(h => TYPE_COLS.includes(h) || h.includes('type') || h.includes('direction')),
+    balance: headers.findIndex(h => BALANCE_COLS.includes(h) || h.includes('balance')),
+    ref:     headers.findIndex(h => REF_COLS.includes(h) || h.includes('ref') || h.includes('utr') || h.includes('txn id')),
+    upiId:   headers.findIndex(h => UPI_ID_COLS.includes(h) || h.includes('upi') || h.includes('vpa')),
+    orderId: headers.findIndex(h => ORDER_ID_COLS.includes(h) || h.includes('order')),
+    notes:   headers.findIndex(h => NOTES_COLS.includes(h) || h.includes('note') || h.includes('remark')),
+    account: headers.findIndex(h => ACCOUNT_COLS.includes(h) || h.includes('account')),
+    channel: headers.findIndex(h => CHANNEL_COLS.includes(h) || h.includes('channel') || h.includes('mode')),
   };
 
   if (idx.date === -1) {
-    return { provider, transactions: [], warnings: [`Could not find a Date column in CSV. Found headers: ${headers.join(', ')}`] };
+    return { provider, transactions: [], warnings: [`Could not find a Date column in CSV. Found headers: ${headers.filter(h => h).join(', ')}`] };
   }
-  if (idx.desc === -1 && idx.amount === -1 && idx.debit === -1) {
-    return { provider, transactions: [], warnings: [`Could not find Description or Amount columns in CSV. Found headers: ${headers.join(', ')}`] };
+  if (idx.desc === -1 && idx.amount === -1 && idx.debit === -1 && idx.credit === -1) {
+    return { provider, transactions: [], warnings: [`Could not find Description or Amount columns in CSV. Found headers: ${headers.filter(h => h).join(', ')}`] };
   }
 
-  console.log(`[FINOVA CSV] Column map: date=${idx.date} desc=${idx.desc} debit=${idx.debit} credit=${idx.credit} amount=${idx.amount} ref=${idx.ref} upiId=${idx.upiId} orderId=${idx.orderId} channel=${idx.channel}`);
+  console.log(`[FINOVA CSV] Detected delimiter: "${delimiter}", header row: ${headerLine + 1}. Column map: date=${idx.date} desc=${idx.desc} debit=${idx.debit} credit=${idx.credit} amount=${idx.amount} ref=${idx.ref} upiId=${idx.upiId} orderId=${idx.orderId}`);
 
-  for (let i = headerLine + 1; i < lines.length; i++) {
-    const row = parseCSVRow(lines[i]);
+  for (let i = headerLine + 1; i < nonFolderLines.length; i++) {
+    const row = parseCSVRow(nonFolderLines[i], delimiter);
     if (row.length < 2) continue;
 
     // Preserve exact date string from source — NEVER alter it
@@ -272,13 +291,26 @@ export function parseWalletCSV(
   }
 
   if (transactions.length === 0) {
-    warnings.push(`No valid transactions found in CSV. Detected ${lines.length - headerLine - 1} data rows after header.`);
+    warnings.push(`No valid transactions found in CSV. Detected ${nonFolderLines.length - headerLine - 1} data rows after header.`);
   }
 
   return { provider, transactions, warnings };
 }
 
-function parseCSVRow(line: string): string[] {
+function detectDelimiter(lines: string[]): string {
+  const sample = lines.slice(0, 5).join('\n');
+  const commaCount = (sample.match(/,/g) || []).length;
+  const semiCount  = (sample.match(/;/g) || []).length;
+  const tabCount   = (sample.match(/\t/g) || []).length;
+  const pipeCount  = (sample.match(/\|/g) || []).length;
+
+  if (semiCount > commaCount && semiCount > tabCount && semiCount > pipeCount) return ';';
+  if (tabCount > commaCount && tabCount > semiCount && tabCount > pipeCount) return '\t';
+  if (pipeCount > commaCount * 2 && pipeCount > semiCount && pipeCount > tabCount) return '|';
+  return ',';
+}
+
+function parseCSVRow(line: string, delimiter = ','): string[] {
   const result: string[] = [];
   let current = '';
   let inQuotes = false;
@@ -292,7 +324,7 @@ function parseCSVRow(line: string): string[] {
       } else {
         inQuotes = !inQuotes;
       }
-    } else if (char === ',' && !inQuotes) {
+    } else if (char === delimiter && !inQuotes) {
       result.push(current.trim());
       current = '';
     } else {

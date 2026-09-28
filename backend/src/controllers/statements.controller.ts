@@ -192,8 +192,8 @@ export const uploadStatement = async (req: AuthRequest, res: Response): Promise<
       const rawNarration = raw.rawNarration || raw.description;
 
       const catResult = categorizeTransaction(rawNarration, isCredit, 'BANK');
-      if (isCredit && isIncomeCategory(catResult.category)) totalCredits += amount;
-      if (!isCredit && isExpenseCategory(catResult.category)) totalDebits += amount;
+      if (isCredit) totalCredits += amount;
+      else totalDebits += amount;
 
       // Parse date — if unrecognised, returns epoch (1970) and flags needsReview
       const parsedDate = parseDate(raw.date);
@@ -340,8 +340,8 @@ export const uploadWalletStatement = async (req: AuthRequest, res: Response): Pr
       const rawNarration = raw.rawNarration || raw.description;
 
       const catResult = categorizeTransaction(rawNarration, isCredit, 'WALLET');
-      if (isCredit && isIncomeCategory(catResult.category)) totalCredits += amount;
-      if (!isCredit && isExpenseCategory(catResult.category)) totalDebits += amount;
+      if (isCredit) totalCredits += amount;
+      else totalDebits += amount;
 
       // Parse date — if unrecognised, returns epoch (1970) and flags needsReview
       const parsedDate = parseDate(raw.date);
