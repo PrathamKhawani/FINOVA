@@ -1,0 +1,61 @@
+## ─────────────────────────────────────────────────────────────────────────────
+## FINOVA — Render Blueprint
+## Deploys the Express backend as a persistent Web Service on Render.
+## The Next.js frontend remains on Vercel.
+##
+## Usage:
+##   1. Push this repo to GitHub.
+##   2. In Render Dashboard → New → Blueprint → select this repo.
+##   3. Render reads this file and creates the service automatically.
+##   4. Set the required environment variables in Render Dashboard (see below).
+## ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  - type: web
+    name: finova-backend
+    runtime: node
+    region: oregon            # or frankfurt / singapore — pick closest to your users
+    plan: free                # upgrade to starter ($7/mo) for always-on, no cold starts
+
+    # ── Source ────────────────────────────────────────────────────────────────
+    rootDir: backend          # backend/ is the Node project root inside the monorepo
+
+    # ── Build ─────────────────────────────────────────────────────────────────
+    buildCommand: npm install && npx prisma generate && npm run build
+
+    # ── Start ─────────────────────────────────────────────────────────────────
+    startCommand: node dist/index.js
+
+    # ── Health Check ──────────────────────────────────────────────────────────
+    healthCheckPath: /health
+
+    # ── Environment Variables ─────────────────────────────────────────────────
+    # Set these in Render Dashboard → Environment → Secret Variables.
+    # NEVER hardcode secrets here — this file is committed to git.
+    envVars:
+      - key: NODE_ENV
+        value: production
+
+      # Render assigns PORT automatically — backend reads process.env.PORT
+      - key: PORT
+        generateValue: false   # Render injects PORT; do not override
+
+      # ── Required secrets — set manually in Render Dashboard ──────────────
+      # - key: DATABASE_URL
+      #   value: postgresql://USER:PASS@ep-xxx.us-east-2.aws.neon.tech/neondb?sslmode=require
+      #
+      # - key: JWT_ACCESS_SECRET
+      #   value: <long random string — generate with: openssl rand -hex 64>
+      #
+      # - key: JWT_REFRESH_SECRET
+      #   value: <long random string — generate with: openssl rand -hex 64>
+      #
+      # - key: JWT_ACCESS_EXPIRES_IN
+      #   value: 15m
+      #
+      # - key: JWT_REFRESH_EXPIRES_IN
+      #   value: 7d
+      #
+      # - key: CORS_ORIGIN
+      #   value: https://your-finova-frontend.vercel.app
+      #   (comma-separate multiple origins if needed)

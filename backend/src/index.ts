@@ -46,6 +46,7 @@ app.get('/health', (_req, res) => {
     service: 'FINOVA API',
     version: '1.0.0',
     timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
   });
 });
 
@@ -73,10 +74,13 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 // ── Start Server ─────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`\n🚀 FINOVA API running on http://localhost:${PORT}`);
-  console.log(`   Health: http://localhost:${PORT}/health`);
-  console.log(`   Environment: ${process.env.NODE_ENV || 'development'}\n`);
+// Bind explicitly to 0.0.0.0 so Render (and other PaaS) can route external
+// traffic to this process. Falls back gracefully when running locally.
+app.listen(Number(PORT), '0.0.0.0', () => {
+  console.log(`\n🚀 FINOVA API running on http://0.0.0.0:${PORT}`);
+  console.log(`   Health:      http://0.0.0.0:${PORT}/health`);
+  console.log(`   Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`   CORS origins: ${allowedOrigins.join(', ')}\n`);
 });
 
 export default app;
