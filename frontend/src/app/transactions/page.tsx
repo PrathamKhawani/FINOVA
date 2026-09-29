@@ -267,9 +267,11 @@ function ReviewModal({ tx, onClose, onSaved }: ReviewModalProps) {
                 id="rememberToggle"
                 type="button"
                 onClick={() => setRememberThis(v => !v)}
-                className={`relative inline-flex items-center h-6 w-11 rounded-full transition-colors shrink-0 p-0.5 ${rememberThis ? 'bg-blue-600' : 'bg-slate-700'}`}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${rememberThis ? 'bg-blue-600' : 'bg-slate-700'}`}
               >
-                <span className={`inline-block w-5 h-5 rounded-full bg-white shadow-md transform transition-transform ${rememberThis ? 'translate-x-5' : 'translate-x-0'}`} />
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow-lg ring-0 transition duration-200 ease-in-out ${rememberThis ? 'translate-x-5' : 'translate-x-0'}`}
+                />
               </button>
             </label>
 
