@@ -1,5 +1,5 @@
 /**
- * FINOVA Universal Wallet & UPI Statement Parser v10
+ * FINOVA Universal Wallet & UPI Statement Parser v11
  *
  * Data Integrity Guarantee:
  *  - NEVER uses current year as a fallback for missing transaction years.
@@ -7,11 +7,23 @@
  *  - NEVER confuses account numbers, balances, or totals with transaction amounts.
  *  - statementSource (BANK/WALLET/provider) is always SEPARATE from paymentChannel (UPI/NEFT/IMPS).
  *  - Raw narration is preserved verbatim from the original file.
+ *  - CSV parsing logic is NEVER modified during PDF fixes (strict pipeline separation).
  *
- * CSV extraction: maps columns dynamically from header names; preserves original values exactly.
- * PDF extraction: reconstructs complete transaction blocks before parsing.
- * Native PDF extraction first; OCR only when genuinely required.
+ * TWO COMPLETELY INDEPENDENT PIPELINES:
+ *  A) CSV  → parseWalletCSV()   — maps CSV columns, preserves verbatim values
+ *  B) PDF  → parseWalletPDF()   — native PDF text extraction → Paytm block parser
+ *
+ * Paytm PDF structure (FY Apr–Mar):
+ *  - Date is on its own line: "27 Mar"
+ *  - Time is on next line:    "9:23 AM"
+ *  - Transaction continues until the NEXT date line
+ *  - Amount has explicit sign: "+ Rs.100" or "- Rs.354.06"
+ *  - Year boundary: dates Apr–Dec belong to startYear; dates Jan–Mar belong to endYear
  */
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SHARED INTERFACES
+// ─────────────────────────────────────────────────────────────────────────────
 
 export interface ParsedWalletTransaction {
   date: string;
@@ -36,6 +48,13 @@ export interface WalletParseResult {
   transactions: ParsedWalletTransaction[];
   warnings: string[];
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+//   PIPELINE A — CSV PARSER
+//   DO NOT MODIFY THIS SECTION WHILE WORKING ON PDF FIXES
+// ══════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ── CSV Column Name Aliases (exhaustive) ─────────────────────────────────────
 // Each list covers all known column header variants seen in real exports.
@@ -63,7 +82,7 @@ function normalizeHeader(h: string): string {
  * DOES NOT use Math.abs() — direction is determined by the type/dr-cr column,
  * not by sign. The sign in the raw string is preserved in the direction decision.
  */
-function parseAmount(val: string | undefined | null): { value: number | null; isNegative: boolean } {
+function parseAmountCSV(val: string | undefined | null): { value: number | null; isNegative: boolean } {
   if (!val || val.trim() === '' || val.trim() === '-' || val.trim() === '—') {
     return { value: null, isNegative: false };
   }
@@ -102,36 +121,42 @@ function detectProvider(fullText: string, filename?: string): string {
   return 'Unknown / Not specified';
 }
 
-// ── Statement Year & Period Inference from Document Header ─────────────────────
-// NEVER uses current year — leaves year as null if not found in header.
-function detectStatementPeriod(lines: string[]): { year: string | null; startMonth: string | null; endMonth: string | null; periodStr: string | null } {
-  const headerText = lines.slice(0, 40).join(' ');
+function detectDelimiter(lines: string[]): string {
+  const sample = lines.slice(0, 5).join('\n');
+  const commaCount = (sample.match(/,/g) || []).length;
+  const semiCount  = (sample.match(/;/g) || []).length;
+  const tabCount   = (sample.match(/\t/g) || []).length;
+  const pipeCount  = (sample.match(/\|/g) || []).length;
 
-  // Paytm format: "01 August 2026 - 31 August 2026" or "Transaction Statement Period 01 August 2026 - 31 August 2026"
-  const periodRangeMatch = headerText.match(
-    /(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})\s*[-–]\s*(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})/i
-  );
-  if (periodRangeMatch) {
-    const startMonth = periodRangeMatch[2];
-    const startYear = periodRangeMatch[3];
-    const endMonth = periodRangeMatch[5];
-    const endYear = periodRangeMatch[6];
-    return {
-      year: endYear,
-      startMonth: startMonth,
-      endMonth: endMonth,
-      periodStr: `${periodRangeMatch[1]} ${startMonth} ${startYear} - ${periodRangeMatch[4]} ${endMonth} ${endYear}`,
-    };
+  if (semiCount > commaCount && semiCount > tabCount && semiCount > pipeCount) return ';';
+  if (tabCount > commaCount && tabCount > semiCount && tabCount > pipeCount) return '\t';
+  if (pipeCount > commaCount * 2 && pipeCount > semiCount && pipeCount > tabCount) return '|';
+  return ',';
+}
+
+function parseCSVRow(line: string, delimiter = ','): string[] {
+  const result: string[] = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    if (char === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (char === delimiter && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
   }
-
-  // Generic: look for a 4-digit year in the 2020-2099 range
-  const m = headerText.match(/\b(20[2-9]\d)\b/);
-  return {
-    year: m ? m[1] : null,
-    startMonth: null,
-    endMonth: null,
-    periodStr: null,
-  };
+  result.push(current.trim());
+  return result;
 }
 
 // ── CSV Parser ────────────────────────────────────────────────────────────────
@@ -141,7 +166,7 @@ export function parseWalletCSV(
 ): WalletParseResult {
   const warnings: string[] = [];
   const transactions: ParsedWalletTransaction[] = [];
-  
+
   // 1. Strip UTF-8 BOM if present
   const cleanContent = content.replace(/^\uFEFF/, '');
   const provider = detectProvider(cleanContent, filename);
@@ -232,7 +257,7 @@ export function parseWalletCSV(
     const description = idx.desc >= 0 ? (row[idx.desc] || '').trim() : '';
 
     // Preserve exact balance
-    const { value: balance } = idx.balance >= 0 ? parseAmount(row[idx.balance] || '') : { value: null };
+    const { value: balance } = idx.balance >= 0 ? parseAmountCSV(row[idx.balance] || '') : { value: null };
 
     // Preserve exact reference ID
     const referenceId = idx.ref >= 0 ? (row[idx.ref] || '').trim() || null : null;
@@ -258,14 +283,14 @@ export function parseWalletCSV(
 
     if (idx.debit >= 0 || idx.credit >= 0) {
       // Explicit separate debit/credit columns — most reliable
-      const { value: dv } = parseAmount(idx.debit >= 0 ? (row[idx.debit] || '') : '');
-      const { value: cv } = parseAmount(idx.credit >= 0 ? (row[idx.credit] || '') : '');
+      const { value: dv } = parseAmountCSV(idx.debit >= 0 ? (row[idx.debit] || '') : '');
+      const { value: cv } = parseAmountCSV(idx.credit >= 0 ? (row[idx.credit] || '') : '');
       debit  = dv;
       credit = cv;
     } else if (idx.amount >= 0) {
       // Single amount column — use type column or sign to determine direction
       const rawAmountStr = row[idx.amount] || '';
-      const { value: rawAmount, isNegative } = parseAmount(rawAmountStr);
+      const { value: rawAmount, isNegative } = parseAmountCSV(rawAmountStr);
       if (rawAmount === null) continue;
 
       const typeStr = idx.type >= 0 ? (row[idx.type] || '').toLowerCase().trim() : '';
@@ -320,46 +345,15 @@ export function parseWalletCSV(
   return { provider, transactions, warnings };
 }
 
-function detectDelimiter(lines: string[]): string {
-  const sample = lines.slice(0, 5).join('\n');
-  const commaCount = (sample.match(/,/g) || []).length;
-  const semiCount  = (sample.match(/;/g) || []).length;
-  const tabCount   = (sample.match(/\t/g) || []).length;
-  const pipeCount  = (sample.match(/\|/g) || []).length;
-
-  if (semiCount > commaCount && semiCount > tabCount && semiCount > pipeCount) return ';';
-  if (tabCount > commaCount && tabCount > semiCount && tabCount > pipeCount) return '\t';
-  if (pipeCount > commaCount * 2 && pipeCount > semiCount && pipeCount > tabCount) return '|';
-  return ',';
-}
-
-function parseCSVRow(line: string, delimiter = ','): string[] {
-  const result: string[] = [];
-  let current = '';
-  let inQuotes = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    if (char === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === delimiter && !inQuotes) {
-      result.push(current.trim());
-      current = '';
-    } else {
-      current += char;
-    }
-  }
-  result.push(current.trim());
-  return result;
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+//   PIPELINE B — PDF PARSER (DEDICATED — NO SHARED LOGIC WITH CSV)
+//   Rebuilt from root cause for Paytm FY Apr–Mar statements.
+// ══════════════════════════════════════════════════════════════════════════════
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ── PDF Text Extraction via unpdf (serverless-safe, Vercel-compatible) ─────────
-async function extractTextFromPDF(buffer: Buffer): Promise<{ text: string; pages: string[][]; items: any[] }> {
+async function extractPDFPages(buffer: Buffer): Promise<{ pages: string[][]; allText: string }> {
   const { getDocumentProxy } = require('unpdf') as {
     getDocumentProxy: (data: Uint8Array) => Promise<any>;
   };
@@ -367,110 +361,277 @@ async function extractTextFromPDF(buffer: Buffer): Promise<{ text: string; pages
   const data = new Uint8Array(buffer);
   const doc = await getDocumentProxy(data);
 
-  console.log('[FINOVA Universal PDF] unpdf loaded document, total pages:', doc.numPages);
+  console.log('[FINOVA PDF] unpdf loaded document, pages:', doc.numPages);
 
   const pages: string[][] = [];
-  const allItems: any[] = [];
-  let fullText = '';
+  let allText = '';
 
   for (let p = 1; p <= doc.numPages; p++) {
     const page = await doc.getPage(p);
     const content = await page.getTextContent();
 
-    const yMap = new Map<number, Array<{ x: number; y: number; str: string }>>();
+    // Group text items by Y coordinate (6px tolerance) — top-to-bottom order
+    const yMap = new Map<number, Array<{ x: number; str: string }>>();
+
     for (const item of content.items as any[]) {
       if (!item.str || item.str.trim() === '') continue;
       const y = Math.round(item.transform[5]);
       const x = Math.round(item.transform[4]);
-
-      allItems.push({ str: item.str, x, y, page: p });
 
       let matchedY: number | null = null;
       for (const yKey of yMap.keys()) {
         if (Math.abs(yKey - y) <= 6) { matchedY = yKey; break; }
       }
       if (matchedY !== null) {
-        yMap.get(matchedY)!.push({ x, y, str: item.str });
+        yMap.get(matchedY)!.push({ x, str: item.str });
       } else {
-        yMap.set(y, [{ x, y, str: item.str }]);
+        yMap.set(y, [{ x, str: item.str }]);
       }
     }
 
+    // Sort descending by Y (PDF Y is bottom-up), merge items left-to-right
     const ys = Array.from(yMap.keys()).sort((a, b) => b - a);
     const pageLines: string[] = [];
+
     for (const y of ys) {
       const lineItems = yMap.get(y)!.sort((a, b) => a.x - b.x);
-      // Fix: re-join split comma-separated numbers (e.g. "1,23" split by PDF)
-      let lineStr = lineItems.map(it => it.str).join(' ').replace(/(\d+),\s+(\d{2,3})/g, '$1,$2').trim();
+      // Re-join split comma-separated numbers (e.g. "1,23" split by PDF renderer)
+      const lineStr = lineItems
+        .map(it => it.str)
+        .join(' ')
+        .replace(/(\d+),\s+(\d{2,3})/g, '$1,$2')
+        .trim();
       if (lineStr) {
         pageLines.push(lineStr);
-        fullText += lineStr + '\n';
+        allText += lineStr + '\n';
       }
     }
+
     pages.push(pageLines);
-    fullText += '\n';
+    allText += '\n';
   }
 
-  return { text: fullText, pages, items: allItems };
+  return { pages, allText };
 }
 
-// ── Date & Time Utilities ─────────────────────────────────────────────────────
-const DATE_ANCHOR_RES = [
-  // Full dates with year: "27/03/2025", "27-03-2025", "01/12/25", "27.03.2025"
-  /\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b/,
-  // ISO: "2025-03-27"
-  /\b\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}\b/,
-  // "5 Oct 2024", "02 Aug, 2026"
-  /\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?),?\s+\d{2,4}\b/i,
-  // "Oct 5, 2024"
-  /\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s+\d{2,4}\b/i,
-  // Date WITHOUT year — only use as anchor if no full-date match above
-  /\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b/i,
-];
+// ── Month name maps for Paytm abbreviated format ──────────────────────────────
+const MONTH_NUM: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+  january: 1, february: 2, march: 3, april: 4, june: 6,
+  july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
+};
 
-const TIME_RE = /\b(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?|\d{1,2}\s*(?:AM|PM|am|pm))\b/i;
+const MONTH_PAD: Record<number, string> = {
+  1: '01', 2: '02', 3: '03', 4: '04', 5: '05', 6: '06',
+  7: '07', 8: '08', 9: '09', 10: '10', 11: '11', 12: '12',
+};
 
-function extractDateAnchor(line: string): string | null {
-  for (const re of DATE_ANCHOR_RES) {
-    const m = line.match(re);
-    if (m) return m[0];
+/**
+ * Detect statement period from Paytm PDF header.
+ *
+ * Handles formats:
+ *  - "1 APR'24 - 31 MAR'25"       (Paytm FY format with abbreviated months + 2-digit year)
+ *  - "01 April 2024 - 31 March 2025"  (full month names + 4-digit year)
+ *  - "Transaction Statement Period 01 April 2024 - 31 March 2025"
+ *
+ * Returns: { startYear, startMonth (1-12), endYear, endMonth (1-12) }
+ * or null if not found.
+ */
+interface StatementPeriod {
+  startYear: number;
+  startMonth: number;
+  endYear: number;
+  endMonth: number;
+  periodStr: string;
+}
+
+function detectPaytmPeriod(lines: string[]): StatementPeriod | null {
+  const headerText = lines.slice(0, 50).join(' ');
+
+  // Pattern 1: "1 APR'24 - 31 MAR'25"  or  "1 Apr'24 - 31 Mar'25"
+  // The abbreviated month + 2-digit year format used by Paytm
+  const abbrevPattern = /(\d{1,2})\s+([A-Za-z]{3})'(\d{2})\s*[-–]\s*(\d{1,2})\s+([A-Za-z]{3})'(\d{2})/i;
+  const abbrevMatch = headerText.match(abbrevPattern);
+  if (abbrevMatch) {
+    const startMonthName = abbrevMatch[2].toLowerCase();
+    const startYearShort = parseInt(abbrevMatch[3], 10);
+    const endMonthName   = abbrevMatch[5].toLowerCase();
+    const endYearShort   = parseInt(abbrevMatch[6], 10);
+
+    const startMonth = MONTH_NUM[startMonthName];
+    const endMonth   = MONTH_NUM[endMonthName];
+
+    if (startMonth && endMonth) {
+      const startYear = 2000 + startYearShort;
+      const endYear   = 2000 + endYearShort;
+
+      console.log(`[FINOVA PDF] Detected Paytm period (abbrev): ${abbrevMatch[1]} ${abbrevMatch[2].toUpperCase()}'${abbrevMatch[3]} - ${abbrevMatch[4]} ${abbrevMatch[5].toUpperCase()}'${abbrevMatch[6]}`);
+      console.log(`[FINOVA PDF] Resolved: startYear=${startYear} startMonth=${startMonth} endYear=${endYear} endMonth=${endMonth}`);
+
+      return {
+        startYear,
+        startMonth,
+        endYear,
+        endMonth,
+        periodStr: `${abbrevMatch[1]} ${abbrevMatch[2].toUpperCase()}'${abbrevMatch[3]} - ${abbrevMatch[4]} ${abbrevMatch[5].toUpperCase()}'${abbrevMatch[6]}`,
+      };
+    }
   }
+
+  // Pattern 2: "01 April 2024 - 31 March 2025" (full month names with 4-digit years)
+  const fullPattern = /(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})\s*[-–]\s*(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})/i;
+  const fullMatch = headerText.match(fullPattern);
+  if (fullMatch) {
+    const startMonth = MONTH_NUM[fullMatch[2].toLowerCase()];
+    const endMonth   = MONTH_NUM[fullMatch[5].toLowerCase()];
+    const startYear  = parseInt(fullMatch[3], 10);
+    const endYear    = parseInt(fullMatch[6], 10);
+
+    if (startMonth && endMonth) {
+      console.log(`[FINOVA PDF] Detected period (full): ${fullMatch[0]}`);
+      return {
+        startYear, startMonth,
+        endYear,   endMonth,
+        periodStr: fullMatch[0],
+      };
+    }
+  }
+
+  // Pattern 3: Generic — single 4-digit year anywhere in header
+  const singleYear = headerText.match(/\b(20[2-9]\d)\b/);
+  if (singleYear) {
+    const yr = parseInt(singleYear[1], 10);
+    console.log(`[FINOVA PDF] Generic year fallback: ${yr}`);
+    return {
+      startYear: yr, startMonth: 1,
+      endYear: yr,   endMonth: 12,
+      periodStr: singleYear[1],
+    };
+  }
+
   return null;
 }
 
-function extractTime(line: string): string | null {
-  const m = line.match(TIME_RE);
-  return m ? m[0] : null;
+/**
+ * Resolve the correct year for a transaction date given the statement period.
+ *
+ * Rules:
+ *  - If the period is the same year start→end (e.g. Jan–Dec 2024), use that year.
+ *  - If the period crosses a year boundary (e.g. Apr 2024 – Mar 2025):
+ *    - Months >= startMonth  → startYear (e.g. Apr–Dec → 2024)
+ *    - Months < startMonth   → endYear   (e.g. Jan–Mar → 2025)
+ *
+ * NEVER uses current system year.
+ */
+function resolveYearForMonth(txMonth: number, period: StatementPeriod): number {
+  if (period.startYear === period.endYear) {
+    // Same year throughout
+    return period.startYear;
+  }
+  // Cross-year boundary: months from startMonth onwards belong to startYear
+  if (txMonth >= period.startMonth) {
+    return period.startYear;
+  } else {
+    return period.endYear;
+  }
+}
+
+// ── Paytm date-line detector ──────────────────────────────────────────────────
+// Matches: "27 Mar", "1 Apr", "31 March", "28 January" etc.
+// These are date-ONLY lines (no year) in the Paytm PDF format.
+const PAYTM_DATE_RE = /^(\d{1,2})\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)$/i;
+
+// Matches full dates that already include year (general PDF formats)
+const FULL_DATE_RE = /\b(\d{1,2})[\/\-\.](\d{1,2})[\/\-\.](\d{2,4})\b|\b(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})\b|\b(\d{1,2})\s+(Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(\d{4})\b/i;
+
+// Time line: "9:23 AM", "12:29 AM", "3:45 PM"
+const TIME_LINE_RE = /^(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM))$/i;
+
+// Time anywhere in a block
+const TIME_ANYWHERE_RE = /\b(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?)\b/i;
+
+/**
+ * Try to match a Paytm date-only line ("27 Mar").
+ * Returns { day, monthNum, monthName } or null.
+ */
+function matchPaytmDateLine(line: string): { day: number; monthNum: number; monthName: string } | null {
+  const m = line.trim().match(PAYTM_DATE_RE);
+  if (!m) return null;
+  const day = parseInt(m[1], 10);
+  const monthName = m[2].toLowerCase().substring(0, 3); // normalize to 3-char abbrev
+  const monthNum = MONTH_NUM[m[2].toLowerCase()];
+  if (!monthNum) return null;
+  return { day, monthNum, monthName };
+}
+
+/**
+ * Extract explicitly signed amount from Paytm PDF block.
+ * Paytm uses:  "+ Rs.354.06"  or  "- Rs.71,918.00"  or  "+ Rs.100"
+ *
+ * Returns { amount (positive number), isCredit } or null.
+ */
+function extractPaytmSignedAmount(blockText: string): { amount: number; isCredit: boolean } | null {
+  // Primary: +/- followed by Rs. and amount  (Paytm's own format)
+  const rsPattern = /([+\-])\s*Rs\.?\s*([\d,]+(?:\.\d{1,2})?)/g;
+  const rsMatches: Array<{ amount: number; isCredit: boolean }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = rsPattern.exec(blockText)) !== null) {
+    const val = parseFloat(m[2].replace(/,/g, ''));
+    if (!isNaN(val) && val > 0) {
+      rsMatches.push({ amount: val, isCredit: m[1] === '+' });
+    }
+  }
+
+  if (rsMatches.length > 0) {
+    // Use the FIRST signed amount (transaction amount comes before any balance)
+    return rsMatches[0];
+  }
+
+  // Secondary: +/- followed by ₹ or just a number
+  const genericPattern = /([+\-])\s*[₹\u20B9]?\s*([\d,]+(?:\.\d{1,2})?)/g;
+  const genMatches: Array<{ amount: number; isCredit: boolean }> = [];
+  while ((m = genericPattern.exec(blockText)) !== null) {
+    const val = parseFloat(m[2].replace(/,/g, ''));
+    if (!isNaN(val) && val > 0) {
+      genMatches.push({ amount: val, isCredit: m[1] === '+' });
+    }
+  }
+
+  if (genMatches.length > 0) {
+    return genMatches[0];
+  }
+
+  return null;
 }
 
 /**
  * Extract UPI reference / UTR / order ID from a text block.
- * Returns the most specific match first.
  */
-function extractUPIReference(str: string): { referenceId: string | null; upiId: string | null; orderId: string | null } {
+function extractPDFUPIReference(blockText: string): { referenceId: string | null; upiId: string | null; orderId: string | null } {
   let referenceId: string | null = null;
   let upiId: string | null = null;
   let orderId: string | null = null;
 
-  // UPI Ref/Transaction ID (labelled)
-  const labelledRef = str.match(/(?:UPI\s*(?:Ref|Transaction|Txn)?\s*(?:No|ID)?|Ref\s*(?:No|ID)?|Txn\s*ID|UTR)[:\s]+([A-Za-z0-9]{8,24})/i);
+  // UPI Ref No (labelled)
+  const labelledRef = blockText.match(/(?:UPI\s*(?:Ref|Transaction|Txn)?\s*(?:No|ID)?|Ref\s*(?:No|ID)?|Txn\s*ID|UTR)[:\s]+([A-Za-z0-9]{8,24})/i);
   if (labelledRef) referenceId = labelledRef[1];
 
   // UPI path format: "UPI/123456789012"
-  const upiPath = str.match(/UPI\/([0-9]{8,14})/i);
+  const upiPath = blockText.match(/UPI\/([0-9]{8,14})/i);
   if (upiPath && !referenceId) referenceId = upiPath[1];
 
   // UPI VPA: something@bank
-  const vpa = str.match(/\b([a-zA-Z0-9._\-]+@[a-zA-Z]{2,})\b/);
+  const vpa = blockText.match(/\b([a-zA-Z0-9._\-]+@[a-zA-Z]{2,})\b/);
   if (vpa) upiId = vpa[1];
 
   // Order ID (labelled)
-  const orderMatch = str.match(/(?:Order\s*(?:ID|No)|Payment\s*ID)[:\s]+([A-Za-z0-9_\-]{6,30})/i);
+  const orderMatch = blockText.match(/(?:Order\s*(?:ID|No)|Payment\s*ID)[:\s]+([A-Za-z0-9_\-]{6,30})/i);
   if (orderMatch) orderId = orderMatch[1];
 
-  // Standalone 10-14 digit numeric reference (e.g. Paytm txn IDs)
+  // Standalone 10-14 digit numeric reference (Paytm txn IDs)
   if (!referenceId) {
-    const standalone = str.match(/\b(\d{10,14})\b/);
+    const standalone = blockText.match(/\b(\d{10,14})\b/);
     if (standalone) referenceId = standalone[1];
   }
 
@@ -481,7 +642,7 @@ function extractUPIReference(str: string): { referenceId: string | null; upiId: 
  * Detect paymentChannel from a transaction block (UPI/NEFT/IMPS/Card/Cash etc.)
  * This is HOW money moved — separate from statementSource (BANK/WALLET) and provider.
  */
-function detectPaymentChannelFromBlock(blockText: string): string | null {
+function detectPDFPaymentChannel(blockText: string): string | null {
   const t = blockText.toUpperCase();
   if (/\bUPI\b/.test(t))        return 'UPI';
   if (/\bNEFT\b/.test(t))       return 'NEFT';
@@ -494,101 +655,318 @@ function detectPaymentChannelFromBlock(blockText: string): string | null {
   return null;
 }
 
-// ── SIGNED AMOUNT EXTRACTION ──────────────────────────────────────────────────
 /**
- * Extract explicitly signed amounts from the block text.
- * Paytm PDFs use "+₹100.00" and "-₹71,918.00" format.
- * Returns { amount, isCredit } or null if no signed amount found.
+ * Validate direction using transaction wording as a secondary signal.
+ * Returns: 'CREDIT', 'DEBIT', or 'UNKNOWN'
  */
-function extractSignedAmount(blockText: string): { amount: number; isCredit: boolean } | null {
-  // Match patterns: +₹1,234.56 or -₹1,234.56 or + ₹1,234.56 or - ₹1,234.56
-  // Also: +1,234.56 or -1,234.56
-  const signedMatches: Array<{ amount: number; isCredit: boolean; index: number }> = [];
+function inferDirectionFromWording(blockText: string): 'CREDIT' | 'DEBIT' | 'UNKNOWN' {
+  const lower = blockText.toLowerCase();
 
-  const signedRe = /([+\-])\s*[₹\u20B9]?\s*(\d[\d,]*\.?\d*)/g;
-  let m;
-  while ((m = signedRe.exec(blockText)) !== null) {
-    const val = parseFloat(m[2].replace(/,/g, ''));
-    if (!isNaN(val) && val > 0) {
-      signedMatches.push({
-        amount: val,
-        isCredit: m[1] === '+',
-        index: m.index,
-      });
-    }
-  }
+  // Strong CREDIT signals
+  if (/\breceived\s+from\b/.test(lower)) return 'CREDIT';
+  if (/\bcredited\b/.test(lower)) return 'CREDIT';
+  if (/\brefund\b/.test(lower)) return 'CREDIT';
+  if (/\bcashback\b/.test(lower)) return 'CREDIT';
+  if (/\/cr\//i.test(blockText)) return 'CREDIT';         // UPI/ref/CR/ format
+  if (/\binward\s+upi\b/i.test(blockText)) return 'CREDIT'; // "INWARD UPI TRANSFER"
+  if (/\bapb-cr-\b/i.test(blockText)) return 'CREDIT';   // APB-CR-* bank formats
 
-  if (signedMatches.length === 0) return null;
+  // Strong DEBIT signals
+  if (/\bpaid\s+to\b/.test(lower)) return 'DEBIT';
+  if (/\bsent\s+to\b/.test(lower)) return 'DEBIT';
+  if (/\bdebited\b/.test(lower)) return 'DEBIT';
+  if (/\bmoney\s+sent\b/.test(lower)) return 'DEBIT';
+  if (/\btrain\s+ticket\b/.test(lower)) return 'DEBIT';
+  if (/\bmerchant\b/.test(lower) && !/\breceived\b/.test(lower)) return 'DEBIT';
+  if (/\bfinance\b/.test(lower) && !/\breceived\b/.test(lower)) return 'DEBIT';
+  if (/\brecharge\b/.test(lower)) return 'DEBIT';
+  if (/\/dr\//i.test(blockText)) return 'DEBIT';          // UPI/ref/DR/ format
+  if (/\bemi\s+payment\b/i.test(blockText)) return 'DEBIT'; // EMI payments
+  if (/\bdirect\s+debit\b/i.test(blockText)) return 'DEBIT'; // Direct debit (ACH/ECS)
 
-  // If we have a signed amount that's clearly the transaction amount, use it
-  // Prefer the one that's explicitly signed with + or -
-  // Filter out potential balance values: balances tend to appear after the transaction amount
-  // For Paytm: the transaction amount is the FIRST signed amount in the block
-  return {
-    amount: signedMatches[0].amount,
-    isCredit: signedMatches[0].isCredit,
-  };
+  return 'UNKNOWN';
 }
 
 /**
- * Extract valid monetary amounts from text, excluding date/time/ID components.
- * Returns amounts in the order they appear (NOT sorted).
+ * Extract the description / merchant name from a Paytm transaction block.
+ * The description is the first non-date, non-time, non-amount, non-ID line.
  */
-function extractValidAmounts(text: string, dateStr?: string | null): number[] {
-  let cleanedText = text;
+function extractPaytmDescription(blockLines: string[], dateLineStr: string): string {
+  for (const line of blockLines) {
+    const trimmed = line.trim();
+    // Skip the date line
+    if (trimmed === dateLineStr) continue;
+    // Skip time lines
+    if (TIME_LINE_RE.test(trimmed)) continue;
+    // Skip pure amount lines: "+ Rs.100", "- Rs.354.06"
+    if (/^[+\-]\s*Rs\.?\s*[\d,]+(?:\.\d{1,2})?$/.test(trimmed)) continue;
+    if (/^[+\-]\s*[₹\u20B9]?\s*[\d,]+(?:\.\d{1,2})?$/.test(trimmed)) continue;
+    // Skip lines that are purely numbers
+    if (/^[\d,]+(?:\.\d{1,2})?$/.test(trimmed)) continue;
+    // Skip UPI ID lines: something@bank
+    if (/^[a-zA-Z0-9._\-]+@[a-zA-Z]{2,}$/.test(trimmed)) continue;
+    // Skip reference/order ID labeled lines
+    if (/^(?:UPI\s*(?:Ref|Txn|Transaction|ID|No)|Ref\s*(?:No|ID)|Order\s*(?:ID|No)|UTR)[:\s]/i.test(trimmed)) continue;
+    // Skip known status words
+    if (/^(Completed|Successful|Success|Pending|Failed|Cancelled|Refunded)$/i.test(trimmed)) continue;
+    // Skip page header/footer noise
+    if (/^Page\s+\d+\s*(?:of\s*\d+)?$/i.test(trimmed)) continue;
+    // Skip total lines
+    if (/^Total\s+(?:Money\s+)?(?:Paid|Received)/i.test(trimmed)) continue;
+    // Skip statement header
+    if (/^Paytm\s+Statement\s+for/i.test(trimmed)) continue;
 
-  // Remove the date anchor string first
-  if (dateStr) {
-    cleanedText = cleanedText.replace(new RegExp(dateStr.replace(/[\/\-\.]/g, '\\$&'), 'g'), '');
+    // This is the description
+    return trimmed;
   }
-  // Remove all date patterns
-  for (const re of DATE_ANCHOR_RES) {
-    cleanedText = cleanedText.replace(new RegExp(re.source, 'gi'), '');
-  }
-  // Remove time strings
-  cleanedText = cleanedText.replace(TIME_RE, '');
-  // Remove UPI VPAs and alphanumeric tokens ≥ 6 chars (but NOT pure numeric tokens — those may be amounts)
-  cleanedText = cleanedText.replace(/\b[A-Za-z][A-Za-z0-9@._\-]{5,}\b/gi, '');
-  // Remove standalone alphabetic words ≥ 3 chars (descriptions)
-  cleanedText = cleanedText.replace(/\b[A-Za-z]{3,}\b/g, '');
-
-  // Now extract decimal amounts (with optional currency symbol and Indian number format)
-  const amtMatches = cleanedText.match(
-    /(?:[₹\u20B9$£]?\s*)?(?:\d{1,3}(?:,\d{2,3})+\.\d{1,2}|\d{1,3}(?:,\d{2,3})+|\d+\.\d{1,2})/g
-  ) || [];
-
-  const validAmts: number[] = [];
-  for (const raw of amtMatches) {
-    const val = raw.replace(/[₹\u20B9$£,\s]/g, '');
-    if (!val) continue;
-    const num = parseFloat(val);
-    if (!isNaN(num) && num > 0) {
-      validAmts.push(num);
-    }
-  }
-
-  return validAmts;
+  return '';
 }
 
-// ── Transaction Block Parser (Paytm, Google Pay, PhonePe, BHIM) ───────────────
 /**
- * Groups vertical lines into a single transaction block:
- * DATE + TIME → details → ref/order ID → notes → account → amount
+ * Extract linked bank account from Paytm block.
+ * Paytm format: "Kotak Mahindra Bank - 13" or "HDFC Bank - 4567"
+ */
+function extractPaytmLinkedAccount(blockText: string): string | null {
+  // "Kotak Mahindra Bank - 13" format
+  const bankWithNum = blockText.match(/\b([A-Za-z\s]+Bank\s*(?:-\s*\d{1,10})?)\b/i);
+  if (bankWithNum) {
+    const candidate = bankWithNum[0].trim();
+    if (candidate.length > 4 && candidate.length < 60) return candidate;
+  }
+  // Generic wallet account
+  const wallet = blockText.match(/\b(Paytm\s*Wallet|PhonePe\s*Wallet|Google\s*Pay)\b/i);
+  if (wallet) return wallet[0].trim();
+  return null;
+}
+
+// Lines to skip at the document level (not transaction data)
+const PDF_SKIP_LINE_RE = /^(Page\s+\d+(?:\s+of\s+\d+)?|Total\s+Money\s+(?:Paid|Received)|Paytm\s+Statement\s+for|Date\s+&\s+Time|Transaction\s+Details|Notes\s+&\s+Tags|Your\s+Account|Amount|Date\s+Time|Transaction\s+statement|Note:\s*This|Disclaimer:)$/i;
+
+/**
+ * Parse Paytm PDF transaction blocks.
  *
- * v10 improvements:
- * - Uses explicitly signed amounts (+/-) as the PRIMARY source for both amount AND direction
- * - Falls back to amount heuristics only when no signed amount found
- * - Better block boundary detection
- * - Handles multiline descriptions across page breaks
+ * Strategy:
+ * 1. Identify date lines using PAYTM_DATE_RE ("27 Mar")
+ * 2. Group all lines until the next date line into one transaction block
+ * 3. Extract time, description, signed amount, UPI refs, account from block
+ * 4. Resolve year from statement period using year-boundary logic
+ * 5. Validate direction from sign (authoritative) and wording (secondary)
+ *
+ * NEVER combines amounts. NEVER invents missing data.
+ * Skips Total Money Paid / Total Money Received as statement totals.
  */
-function parseTransactionBlocks(lines: string[], statementYear: string | null): ParsedWalletTransaction[] {
+function parsePaytmBlocks(
+  allLines: string[],
+  period: StatementPeriod | null,
+  warnings: string[]
+): ParsedWalletTransaction[] {
   const txns: ParsedWalletTransaction[] = [];
 
-  // Pre-filter: remove pure header/footer lines
-  const filteredLines = lines.filter(line => {
+  // Pre-filter: remove empty lines, page headers/footers, column headers
+  const lines = allLines.filter(line => {
     const trimmed = line.trim();
     if (!trimmed) return false;
-    // Remove page headers/footers
+    if (PDF_SKIP_LINE_RE.test(trimmed)) return false;
+    return true;
+  });
+
+  console.log(`[FINOVA PDF] parsePaytmBlocks: ${lines.length} filtered lines to process`);
+
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i].trim();
+    const dateParsed = matchPaytmDateLine(line);
+
+    if (!dateParsed) {
+      i++;
+      continue;
+    }
+
+    // We have a date line — collect the block
+    const blockLines: string[] = [line];
+    let j = i + 1;
+
+    while (j < lines.length) {
+      const nextLine = lines[j].trim();
+      if (!nextLine) { j++; continue; }
+
+      // Next date line → end of current block
+      if (matchPaytmDateLine(nextLine)) break;
+
+      // Stop at summary/total lines (these are NOT transactions)
+      if (/^Total\s+Money\s+(?:Paid|Received)/i.test(nextLine)) break;
+      if (/^(?:Opening|Closing)\s+Balance/i.test(nextLine)) break;
+      if (/^(?:Total\s+Credits|Total\s+Debits)/i.test(nextLine)) break;
+
+      blockLines.push(nextLine);
+      j++;
+
+      // Safety cap: Paytm transactions rarely exceed 12 lines
+      // If we have both an amount AND a UPI ref, the block is complete
+      if (blockLines.length >= 12) {
+        const partialText = blockLines.join(' ');
+        const hasAmount = extractPaytmSignedAmount(partialText) !== null;
+        const hasRef = extractPDFUPIReference(partialText).referenceId !== null;
+        if (hasAmount && hasRef) break;
+        // Hard cap at 15 lines regardless
+        if (blockLines.length >= 15) break;
+      }
+    }
+
+    const blockText = blockLines.join(' ');
+
+    // Skip summary/header blocks
+    if (/closing\s*balance|opening\s*balance|total\s+(credits|debits)|account\s*summary|statement\s*period/i.test(blockText)) {
+      i = j;
+      continue;
+    }
+
+    // Skip statement header blocks like "Paytm Statement for 1 APR'24 - 31 MAR'25"
+    if (/Paytm\s+Statement\s+for/i.test(blockText)) {
+      i = j;
+      continue;
+    }
+
+    // ── Resolve transaction date with correct year ────────────────────────────
+    let dateStr: string;
+    const { day, monthNum, monthName } = dateParsed;
+
+    if (period !== null) {
+      const year = resolveYearForMonth(monthNum, period);
+      // Format: "DD Mon YYYY" e.g. "27 Mar 2025"
+      const dayPadded = day.toString().padStart(2, '0');
+      const monthFormatted = monthName.charAt(0).toUpperCase() + monthName.slice(1, 3).toLowerCase();
+      dateStr = `${dayPadded} ${monthFormatted} ${year}`;
+    } else {
+      // No period detected — preserve partial date, flag for review
+      const monthFormatted = monthName.charAt(0).toUpperCase() + monthName.slice(1, 3).toLowerCase();
+      dateStr = `${day} ${monthFormatted}`;
+      warnings.push(`Could not determine year for transaction on "${dateStr}" — statement period not detected.`);
+    }
+
+    // ── Extract time ─────────────────────────────────────────────────────────
+    let timeStr: string | undefined;
+    // Check if line after date is a time line
+    if (blockLines.length > 1) {
+      const secondLine = blockLines[1].trim();
+      if (TIME_LINE_RE.test(secondLine)) {
+        timeStr = secondLine;
+      }
+    }
+    // Fallback: look anywhere in block
+    if (!timeStr) {
+      const timeMatch = blockText.match(TIME_ANYWHERE_RE);
+      if (timeMatch) timeStr = timeMatch[1];
+    }
+
+    // ── Extract signed amount ─────────────────────────────────────────────────
+    const signedResult = extractPaytmSignedAmount(blockText);
+
+    if (!signedResult) {
+      // No amount found — skip, but log for investigation
+      console.warn(`[FINOVA PDF] No amount found in block starting "${line}" — block: ${blockText.substring(0, 120)}`);
+      i = j;
+      continue;
+    }
+
+    const { amount, isCredit: signIsCredit } = signedResult;
+
+    // ── Validate direction: sign is authoritative, wording is secondary ───────
+    const wordingDir = inferDirectionFromWording(blockText);
+    let isCredit: boolean;
+
+    if (wordingDir !== 'UNKNOWN') {
+      const wordingIsCredit = wordingDir === 'CREDIT';
+      if (wordingIsCredit !== signIsCredit) {
+        // Sign and wording conflict — log it, trust the sign
+        warnings.push(`Direction conflict in transaction "${dateStr}": sign says ${signIsCredit ? 'CREDIT' : 'DEBIT'} but wording suggests ${wordingDir}. Using sign.`);
+      }
+    }
+    isCredit = signIsCredit; // Sign is authoritative
+
+    // ── Extract description ───────────────────────────────────────────────────
+    const description = extractPaytmDescription(blockLines, line) || (isCredit ? 'Credit' : 'Debit');
+
+    // ── Extract UPI references ────────────────────────────────────────────────
+    const refs = extractPDFUPIReference(blockText);
+
+    // ── Extract linked account ────────────────────────────────────────────────
+    const linkedAccount = extractPaytmLinkedAccount(blockText);
+
+    // ── Extract note/remarks ──────────────────────────────────────────────────
+    const noteMatch = blockText.match(/\bNote:\s*([^\|]+)/i);
+    const notes = noteMatch ? noteMatch[1].trim() : null;
+
+    // ── Payment channel ───────────────────────────────────────────────────────
+    const paymentChannel = detectPDFPaymentChannel(blockText);
+
+    // ── Status ────────────────────────────────────────────────────────────────
+    const statusMatch = blockText.match(/\b(Completed|Successful|Success|Pending|Failed|Cancelled|Refunded)\b/i);
+    const status = statusMatch ? statusMatch[1] : 'Completed';
+    const failed = /failed|cancelled/i.test(status);
+
+    const rawNarration = blockLines.join(' | ');
+
+    console.log(`[FINOVA PDF] TX: ${dateStr} ${timeStr || ''} | ${isCredit ? 'CREDIT' : 'DEBIT'} Rs.${amount} | ${description.substring(0, 50)}`);
+
+    txns.push({
+      date: dateStr,
+      time: timeStr,
+      description,
+      rawNarration,
+      // Amount stored as POSITIVE; debit/credit fields indicate direction
+      debit:  (!isCredit && !failed) ? amount : null,
+      credit: ( isCredit && !failed) ? amount : null,
+      balance: null,
+      referenceId: refs.referenceId,
+      upiId: refs.upiId,
+      orderId: refs.orderId,
+      notes,
+      linkedAccount,
+      paymentChannel,
+      status,
+      account: linkedAccount || undefined,
+    });
+
+    i = j;
+  }
+
+  return txns;
+}
+
+/**
+ * General-purpose block parser for non-Paytm PDF formats.
+ * Uses full dates (with year) as block boundaries.
+ * Falls back to this when Paytm-specific parsing yields no results.
+ */
+function parseGeneralPDFBlocks(
+  allLines: string[],
+  statementYear: number | null,
+  warnings: string[]
+): ParsedWalletTransaction[] {
+  const txns: ParsedWalletTransaction[] = [];
+
+  const TIME_RE = /\b(\d{1,2}:\d{2}(?::\d{2})?\s*(?:AM|PM|am|pm)?)\b/i;
+
+  const DATE_ANCHOR_RES = [
+    /\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b/,
+    /\b\d{4}[\/\-]\d{1,2}[\/\-]\d{1,2}\b/,
+    /\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?),?\s+\d{2,4}\b/i,
+    /\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{1,2},?\s+\d{2,4}\b/i,
+    /\b\d{1,2}\s+(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b/i,
+  ];
+
+  function extractDateAnchorGen(line: string): string | null {
+    for (const re of DATE_ANCHOR_RES) {
+      const m = line.match(re);
+      if (m) return m[0];
+    }
+    return null;
+  }
+
+  const filteredLines = allLines.filter(line => {
+    const trimmed = line.trim();
+    if (!trimmed) return false;
     if (/^Page\s+\d+\s*(?:of\s*\d+)?$/i.test(trimmed)) return false;
     if (/^(?:Note|Disclaimer):\s*This\s*statement/i.test(trimmed)) return false;
     return true;
@@ -597,11 +975,10 @@ function parseTransactionBlocks(lines: string[], statementYear: string | null): 
   let i = 0;
   while (i < filteredLines.length) {
     const line = filteredLines[i].trim();
-    const dateAnchor = extractDateAnchor(line);
+    const dateAnchor = extractDateAnchorGen(line);
 
     if (!dateAnchor) { i++; continue; }
 
-    // Start a transaction block
     const blockLines: string[] = [line];
     let j = i + 1;
 
@@ -609,140 +986,92 @@ function parseTransactionBlocks(lines: string[], statementYear: string | null): 
       const nextLine = filteredLines[j].trim();
       if (!nextLine) { j++; continue; }
 
-      // A new Date Anchor marks a new transaction
-      const nextDate = extractDateAnchor(nextLine);
+      const nextDate = extractDateAnchorGen(nextLine);
       if (nextDate) break;
 
-      // Document-level stop words
       if (/page\s*\d\s*of\s*\d|closing\s*balance|opening\s*balance|total\s+(credits|debits)|statement\s*summary/i.test(nextLine)) break;
       if (/^Note:\s*This\s*statement\s*reflects/i.test(nextLine)) break;
 
       blockLines.push(nextLine);
       j++;
 
-      // Cap block at 10 lines to avoid merging with next transaction
       if (blockLines.length >= 10) break;
     }
 
     const blockText = blockLines.join(' ');
 
-    // Skip header / summary blocks
     if (/closing\s*balance|opening\s*balance|total\s+(credits|debits)|account\s*summary|statement\s*period|transaction\s*statement\s*period/i.test(blockText)) {
-      i = j;
-      continue;
+      i = j; continue;
     }
-    // Skip date-range header lines: "01 August 2026 - 31 August 2026 ₹25,568.45"
     if (/\b\d{1,2}\s+[A-Za-z]+\s+\d{4}\s*[-–]\s*\d{1,2}\s+[A-Za-z]+\s+\d{4}\b/i.test(blockText)) {
-      i = j;
-      continue;
+      i = j; continue;
     }
 
-    // Derive year ONLY when date has no year AND statement year is known from header
-    // NEVER use current system year as a fallback.
     let dateStr = dateAnchor;
-    const hasYear = /\d{4}/.test(dateStr) || /\d{2,4}$/.test(dateStr.replace(/\s+[A-Za-z]+$/, ''));
+    const hasYear = /\d{4}/.test(dateStr);
     if (!hasYear && statementYear) {
       dateStr = `${dateStr} ${statementYear}`;
     }
-    // If still no year and no statementYear — leave dateStr as-is (partial date preserved)
 
-    const timeStr = extractTime(blockText);
-    const refs    = extractUPIReference(blockText);
-    const paymentChannel = detectPaymentChannelFromBlock(blockText);
+    const timeMatch = blockText.match(TIME_RE);
+    const timeStr = timeMatch ? timeMatch[1] : undefined;
+    const refs = extractPDFUPIReference(blockText);
+    const paymentChannel = detectPDFPaymentChannel(blockText);
 
-    // PRIMARY: Try to extract explicitly signed amount (+/-) — this gives both amount AND direction
-    const signedResult = extractSignedAmount(blockText);
-
+    // Try signed amount first
+    const signedResult = extractPaytmSignedAmount(blockText);
     let amount: number;
-    let isDebit: boolean | null = null;
+    let isCredit: boolean | null = null;
 
     if (signedResult) {
       amount = signedResult.amount;
-      isDebit = !signedResult.isCredit; // + = credit (not debit), - = debit
+      isCredit = signedResult.isCredit;
     } else {
-      // FALLBACK: extract unsigned amounts
-      const validAmts = extractValidAmounts(blockText, dateAnchor);
-      if (validAmts.length === 0) { i = j; continue; }
-
-      // Amount selection for unsigned amounts
-      if (validAmts.length === 1) {
-        amount = validAmts[0];
-      } else {
-        // Pick the amount that is NOT a typical balance (balances tend to be larger)
-        // Heuristic: use the smallest non-trivial amount, or the last one
-        amount = validAmts[validAmts.length - 1];
+      // Unsigned amount heuristics
+      const amtMatches: number[] = [];
+      const amtRe = /(?:[₹\u20B9$£Rs]?\s*)?([\d,]+(?:\.\d{1,2})?)/g;
+      let am: RegExpExecArray | null;
+      const cleanedForAmts = blockText
+        .replace(TIME_RE, '')
+        .replace(/\b\d{4}\b/g, '')
+        .replace(/\b\d{1,2}[\/\-\.]\d{1,2}\b/g, '');
+      while ((am = amtRe.exec(cleanedForAmts)) !== null) {
+        const v = parseFloat(am[1].replace(/,/g, ''));
+        if (!isNaN(v) && v > 0 && v < 10000000) amtMatches.push(v);
       }
+      if (amtMatches.length === 0) { i = j; continue; }
+      amount = amtMatches[amtMatches.length - 1];
 
-      // Determine direction from text signals
-      if (
-        /\bReceived\s+from\b/i.test(blockText) ||
-        /\bCredited\b/i.test(blockText) ||
-        /\/CR\//i.test(blockText) ||
-        (/\bCR\b/i.test(blockText) && !/\b\d+[.,]\d+\s+Cr\b/i.test(blockText))
-      ) {
-        isDebit = false;
-      } else if (
-        /\bPaid\s+to\b/i.test(blockText) ||
-        /\bSent\s+to\b/i.test(blockText) ||
-        /\bDebited\b/i.test(blockText) ||
-        /\/DR\//i.test(blockText) ||
-        /\bDR\b/i.test(blockText)
-      ) {
-        isDebit = true;
-      }
+      const wording = inferDirectionFromWording(blockText);
+      if (wording === 'CREDIT') isCredit = true;
+      else if (wording === 'DEBIT') isCredit = false;
     }
 
-    // Extract description / merchant / counterparty
+    // Extract description
     let description = '';
-    const paidToMatch      = blockText.match(/\bPaid\s+to\s+([^₹\d\n|+\-]+?)(?=\s*(?:[₹+\-]|\d{4,}|UPI|Paid\s+by|Paid\s+to|Note:|$))/i);
-    const receivedFromMatch = blockText.match(/\bReceived\s+from\s+([^₹\d\n|+\-]+?)(?=\s*(?:[₹+\-]|\d{4,}|UPI|Paid\s+by|Paid\s+to|Note:|$))/i);
-    const sentToMatch      = blockText.match(/\bSent\s+to\s+([^₹\d\n|+\-]+?)(?=\s*(?:[₹+\-]|\d{4,}|UPI|Paid\s+by|Paid\s+to|Note:|$))/i);
-
-    if (receivedFromMatch) description = receivedFromMatch[1].trim();
-    else if (paidToMatch)  description = paidToMatch[1].trim();
-    else if (sentToMatch)  description = sentToMatch[1].trim();
-    else {
-      for (const bl of blockLines) {
-        if (bl.includes(dateAnchor)) continue;
-        if (TIME_RE.test(bl)) continue;
-        if (/^[+\-]?\s*(?:[₹\u20B9$£]\s*)?[\d.,\s]+$/i.test(bl)) continue;
-        if (/^(Completed|Successful|Success|Pending|Failed|Cancelled|Refunded)$/i.test(bl)) continue;
-        description = bl;
-        break;
-      }
-    }
-    description = description.replace(/\s*(?:UPI|Transaction|ID|Paid|Received|by|to|from).*$/i, '').trim();
-
-    // Extract linked account
-    let linkedAccount: string | null = null;
-    const accPaidByMatch = blockText.match(/\bPaid\s+by\s+([A-Za-z0-9\s]+?\d{2,6})\b/i);
-    const accPaidToMatch = blockText.match(/\bPaid\s+to\s+([A-Za-z0-9\s]+?\d{2,6})\b/i);
-    if (accPaidByMatch) linkedAccount = accPaidByMatch[1].trim();
-    else if (isDebit === false && accPaidToMatch) linkedAccount = accPaidToMatch[1].trim();
-    else {
-      const genericBank = blockText.match(/\b([A-Za-z\s]+Bank\s*(?:-\s*\d+)?|Paytm\s*Wallet|Google\s*Pay|PhonePe\s*Wallet)\b/i);
-      if (genericBank) linkedAccount = genericBank[0].trim();
+    for (const bl of blockLines) {
+      if (bl.includes(dateAnchor)) continue;
+      if (TIME_RE.test(bl)) continue;
+      if (/^[+\-]?\s*(?:[₹\u20B9$£Rs]?\s*)?[\d,]+(?:\.\d{1,2})?$/.test(bl.trim())) continue;
+      if (/^(Completed|Successful|Success|Pending|Failed|Cancelled|Refunded)$/i.test(bl.trim())) continue;
+      description = bl.trim();
+      break;
     }
 
-    // Extract note/remarks from block
+    const linkedAccount = extractPaytmLinkedAccount(blockText);
     const noteMatch = blockText.match(/\bNote:\s*([^\|]+)/i);
     const notes = noteMatch ? noteMatch[1].trim() : null;
-
-    // Status
-    let status = 'Completed';
     const statusMatch = blockText.match(/\b(Completed|Successful|Success|Pending|Failed|Cancelled|Refunded)\b/i);
-    if (statusMatch) status = statusMatch[1];
+    const status = statusMatch ? statusMatch[1] : 'Completed';
     const failed = /failed|cancelled/i.test(status);
-
-    const rawNarration = blockLines.join(' | ');
 
     txns.push({
       date: dateStr,
-      time: timeStr || undefined,
-      description: description || 'Wallet Transaction',
-      rawNarration,
-      debit:  (isDebit !== false && !failed) ? amount : null,
-      credit: (isDebit === false && !failed)  ? amount : null,
+      time: timeStr,
+      description: description || 'Transaction',
+      rawNarration: blockLines.join(' | '),
+      debit:  (isCredit !== true && !failed) ? amount : null,
+      credit: (isCredit === true && !failed)  ? amount : null,
       balance: null,
       referenceId: refs.referenceId,
       upiId: refs.upiId,
@@ -770,49 +1099,66 @@ export async function parseWalletPDF(
   let provider = 'Unknown / Not specified';
 
   try {
-    console.log('[FINOVA Universal PDF] Extracting text from PDF via unpdf, buffer length:', buffer.length);
-    const { text: allText, pages } = await extractTextFromPDF(buffer);
+    console.log('[FINOVA PDF] Extracting text from PDF via unpdf, buffer length:', buffer.length);
+    const { pages, allText } = await extractPDFPages(buffer);
     const allLines = pages.flat();
 
-    console.log('[FINOVA Universal PDF] Extracted', allText.length, 'chars across', pages.length, 'page(s) and', allLines.length, 'lines');
+    console.log('[FINOVA PDF] Extracted', allText.length, 'chars across', pages.length, 'page(s) and', allLines.length, 'lines');
 
-    // Strict document-level provider detection (NEVER defaults to Google Pay!)
+    // Strict document-level provider detection
     provider = detectProvider(allText, filename);
-    console.log('[FINOVA Universal PDF] Detected provider:', provider);
+    console.log('[FINOVA PDF] Detected provider:', provider);
 
-    // Derive missing transaction year from statement header/period (NEVER use current year!)
-    const period = detectStatementPeriod(allLines);
-    const statementYear = period.year;
-    if (statementYear) {
-      console.log('[FINOVA Universal PDF] Detected statement year:', statementYear);
+    // Log first 25 lines for debugging
+    console.log('[FINOVA PDF] First 25 extracted lines:');
+    allLines.slice(0, 25).forEach((l, idx) => console.log(`  [${idx}] ${l}`));
+
+    // Detect statement period — handles Paytm "1 APR'24 - 31 MAR'25" format
+    const period = detectPaytmPeriod(allLines);
+    if (period) {
+      console.log(`[FINOVA PDF] Statement period: ${period.periodStr} | startYear=${period.startYear} startMonth=${period.startMonth} endYear=${period.endYear} endMonth=${period.endMonth}`);
     } else {
-      warnings.push('Could not detect statement year from document header. Transactions without a year in their date will preserve the partial date as-is.');
+      warnings.push('Could not detect statement period from document header. Transaction years may be missing or incorrect.');
+      console.warn('[FINOVA PDF] Statement period not detected from header');
     }
 
-    // Log first 20 lines for debugging
-    console.log('[FINOVA Universal PDF] First 20 lines:');
-    allLines.slice(0, 20).forEach((l, idx) => console.log(`  [${idx}] ${l}`));
+    // ── Paytm-specific block parser ──
+    // Try the Paytm format first (date-only lines: "27 Mar")
+    const paytmParsed = parsePaytmBlocks(allLines, period, warnings);
+    console.log('[FINOVA PDF] Paytm block parser extracted:', paytmParsed.length, 'transactions');
 
-    // Universal Transaction Block Parser
-    const parsed = parseTransactionBlocks(allLines, statementYear);
-    console.log('[FINOVA Universal PDF] Transaction Block Parser extracted:', parsed.length, 'transactions');
+    if (paytmParsed.length > 0) {
+      transactions.push(...paytmParsed);
 
-    // Log each parsed transaction for verification
-    parsed.forEach((t, idx) => {
+      // Statement-level totals validation (informational only — NEVER alters transactions)
+      const calcDebits  = paytmParsed.reduce((s, t) => s + (t.debit  ?? 0), 0);
+      const calcCredits = paytmParsed.reduce((s, t) => s + (t.credit ?? 0), 0);
+      console.log(`[FINOVA PDF] Calculated: Debits=₹${calcDebits.toFixed(2)} Credits=₹${calcCredits.toFixed(2)}`);
+    } else {
+      // ── General-purpose fallback ──
+      console.log('[FINOVA PDF] Paytm parser found 0 transactions — trying general block parser');
+      const statementYear = period ? period.endYear : null;
+      const generalParsed = parseGeneralPDFBlocks(allLines, statementYear, warnings);
+      console.log('[FINOVA PDF] General block parser extracted:', generalParsed.length, 'transactions');
+
+      if (generalParsed.length > 0) {
+        transactions.push(...generalParsed);
+      } else {
+        warnings.push('Could not extract transactions from this PDF.');
+        warnings.push(`[DEBUG] First 15 lines: ${allLines.slice(0, 15).join(' | ')}`);
+      }
+    }
+
+    // Log summary of parsed transactions
+    transactions.forEach((t, idx) => {
       const dir = t.credit !== null ? 'CREDIT' : 'DEBIT';
       const amt = t.credit !== null ? t.credit : t.debit;
-      console.log(`  [${idx + 1}] ${t.date} | ${dir} ₹${amt} | ${t.description.substring(0, 50)}`);
+      console.log(`  [${idx + 1}] ${t.date} ${t.time || ''} | ${dir} ₹${amt} | ${t.description.substring(0, 50)}`);
     });
 
-    if (parsed.length === 0) {
-      warnings.push(`Could not extract transactions from this PDF.`);
-      warnings.push(`[DEBUG Preview] First 15 lines: ${allLines.slice(0, 15).join(' | ')}`);
-    } else {
-      transactions.push(...parsed);
-    }
   } catch (err: any) {
-    console.error('[FINOVA Universal PDF] Error during PDF parsing:', err?.message);
-    console.error('[FINOVA Universal PDF] Stack:', err?.stack?.substring(0, 300));
+    console.error('[FINOVA PDF] Error during PDF parsing:', err?.message);
+    console.error('[FINOVA PDF] Stack:', err?.stack?.substring(0, 300));
     warnings.push(`PDF extraction error: ${err.message}`);
   }
 

@@ -15,6 +15,7 @@
     "db:sqlite": "prisma db push --schema=prisma/schema.sqlite.prisma",
     "db:postgres": "prisma db push",
     "test:golden": "ts-node test-golden.ts",
+    "test:pdf-regression": "ts-node test-paytm-regression.ts",
     "db:studio": "prisma studio"
   },
   "keywords": [
